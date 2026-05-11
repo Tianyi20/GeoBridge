@@ -1,4 +1,5 @@
 import time
+import cv2
 import gym
 import numpy as np
 import math
@@ -100,18 +101,16 @@ class PickUpSim(object):
         self.home_ee_pos = np.array(self.home_ee_pos, dtype=float)
         self.home_ee_orn = np.array(self.home_ee_orn, dtype=float)
 
-        # ========= 状态机 =========
+        # ========= pick up状态机 =========
         self.states = [
             "home",
-            "approach_mugtree",
-            "approach_manipulated_cup",
             "move_pregrasp",
             "open_gripper",
             "move_grasp",
             "close_gripper",
-            "extract_cup",
+            "lift_object",
         ]
-        self.state_durations = [0.01, 0.5, 1.0, 0.5, 0.1, 1.0, 0.1, 1.0]
+        self.state_durations = [0.01, 1.0, 0.15, 0.8, 0.3, 1.0]
         self.state_idx = 0
         self.state = self.states[self.state_idx]
         self.state_t = 0.0
@@ -141,6 +140,17 @@ class PickUpSim(object):
                    obj_pose_offset = [0.5, 0.0, 0.0],
                    obj_euler_offset = [0.0, 0.0, 0.0],
                    ):
+        
+        ## TODO: visual things to be randomized:
+        # 1. random number and shape of distractors (no need accurate convex decomposition)
+        # 2. slight disturbance of the object texture, ground texture
+        # 3. objects pose and z axis orientation 
+        # 4. number of lights in the scene
+        # 5. position, orientation, specular characteristics of the lights
+        # 6. types and amount of random noise added to the images 
+
+        # TODO: always enable high quality rendering pipeline
+        # TODO: always enable shadows
 
         self.env_mesh_path = env_mesh_path
         self.pick_up_obj_path = manipulated_obj_path
@@ -181,10 +191,16 @@ class PickUpSim(object):
             center_of_mass=np.array(self.com_pick_up_obj),
             lateral_friction=0.6,
         )
-        self.initial_grasp_guess = load_initial_grasp_pose("grasp_pose.yaml")
+        self.initial_grasp_guess = load_initial_grasp_pose(initial_grasp_path)
 
-
+        # waite scene stable
         self.waite_scene_stable()
+
+        obj_pos, obj_orn = get_true_PositionAndOrientation(
+            self.bullet_client, self.pick_up_obj_id
+        )
+        self.initial_obj_pos = np.array(obj_pos, dtype=float)
+        self.initial_obj_orn = np.array(obj_orn, dtype=float)
 
     def waite_scene_stable(self, waite_steps=1000, vel_threshold=0.005):       
         steps = 0 
@@ -205,7 +221,7 @@ class PickUpSim(object):
 
     def get_initial_guess_grasp(self):
         mesh_world_pos, mesh_world_orn = get_true_PositionAndOrientation(self.bullet_client,
-                                                                         self.manipulated_cup_id)
+                                                                         self.pick_up_obj_id)
         grasp_pose, grasp_orn = self.bullet_client.multiplyTransforms(
             mesh_world_pos,
             mesh_world_orn,
@@ -282,87 +298,16 @@ class PickUpSim(object):
             self.motion_target_orn = self.home_ee_orn.copy()
             self.target_gripper = 0.04
             self.set_gripper(self.target_gripper)
-        
-        elif state == "approach_mugtree":
-            aabbMin, aabbMax = self.bullet_client.getAABB(self.mug_tree)
-            aabbMin = np.array(aabbMin, dtype=float)
-            aabbMax = np.array(aabbMax, dtype=float)
-
-            grasp_pos, grasp_orn = self.get_initial_guess_grasp()
-            grasp_pos = np.array(grasp_pos, dtype=float)
-
-            # 外侧安全距离：离AABB侧面稍微退开一点
-            side_margin = self.safe_approach
-            # 顶部抬高距离：放到AABB最上方再高一点
-            top_margin = 0.05
-
-            # grasp point 到四个侧面的距离
-            dist_to_xmin = abs(grasp_pos[0] - aabbMin[0])
-            dist_to_xmax = abs(aabbMax[0] - grasp_pos[0])
-            dist_to_ymin = abs(grasp_pos[1] - aabbMin[1])
-            dist_to_ymax = abs(aabbMax[1] - grasp_pos[1])
-
-            side_dists = {
-                "xmin": dist_to_xmin,
-                "xmax": dist_to_xmax,
-                "ymin": dist_to_ymin,
-                "ymax": dist_to_ymax,
-            }
-
-            nearest_face = min(side_dists, key=side_dists.get)
-
-            pregrasp_pos = grasp_pos.copy()
-
-            # 先放到“最近侧面”的外侧
-            if nearest_face == "xmin":
-                pregrasp_pos[0] = aabbMin[0] - side_margin
-            elif nearest_face == "xmax":
-                pregrasp_pos[0] = aabbMax[0] + side_margin
-            elif nearest_face == "ymin":
-                pregrasp_pos[1] = aabbMin[1] - side_margin
-            elif nearest_face == "ymax":
-                pregrasp_pos[1] = aabbMax[1] + side_margin
-
-            # 再放到 AABB 顶面上方
-            pregrasp_pos[2] = aabbMax[2] + top_margin
-
-            self.motion_target_pos = pregrasp_pos
-            self.motion_target_orn = self.motion_start_orn
-        
-        elif state == "approach_manipulated_cup":
-            ## get the mug tree center, future grasp pose.
-            ## “沿抓取方向后退”的 pregrasp pose 
-            tree_center, tree_orn = get_COM_PositionAndOrientation(self.bullet_client, 
-                                                                   self.mug_tree)
-            grasp_pos, grasp_orn = self.get_initial_guess_grasp()
-
-            radial = grasp_pos - tree_center
-            radial = radial / np.linalg.norm(radial)
-
-            up = np.array([0.0, 0.0, 1.0], dtype=float)
-
-            alpha = 0.8
-            beta = 0.2
-            v = alpha * radial + beta * up
-            v = v / np.linalg.norm(v)
-
-            pregrasp_pos = grasp_pos + self.safe_approach * v
-
-            self.motion_target_pos = pregrasp_pos
-            self.motion_target_orn = self.motion_start_orn
 
         elif state == "move_pregrasp":
-            cup_base, _ = get_true_PositionAndOrientation(self.bullet_client, 
-                                                          self.manipulated_cup_id)
+            # 简单 pick-up：从物体上方接近，不再根据 mug tree / rack 计算侧向 approach。
             grasp_pos, grasp_orn = self.get_initial_guess_grasp()
 
-            v = grasp_pos - cup_base
-            v = v / np.linalg.norm(v)
-            pregrasp_pos = grasp_pos + self.safe_grasp_offset * v
+            pregrasp_pos = grasp_pos.copy()
+            pregrasp_pos[2] += self.safe_approach
 
             self.motion_target_pos = pregrasp_pos
-            self.motion_target_orn = grasp_orn
-        
+            self.motion_target_orn = grasp_orn.copy()
 
         elif state == "open_gripper":
             self.target_gripper = 0.04
@@ -378,29 +323,10 @@ class PickUpSim(object):
         elif state == "close_gripper":
             self.target_gripper = 0.0
 
-        elif state == "extract_cup":
-            #TODO： 现在这个是基于 grasp pose的，最好改成基于mug tree的树枝方向的
-            if self.last_grasp_pose is None:
-                base_pos, base_orn = self.get_initial_guess_grasp()
-            else:
-                base_pos = self.last_grasp_pose.copy()
-                base_orn = self.last_grasp_orn.copy()
-
-            move_dir_world = np.array(
-                self.bullet_client.multiplyTransforms(
-                    [0, 0, 0],
-                    base_orn.tolist(),
-                    [0.0, -1.0, 0.0],   # local -x = local y rotated +90deg around local z
-                    [0, 0, 0, 1],
-                )[0],
-                dtype=float,
-            )
-
-            move_dist = 0.2
-            target_pos = base_pos.copy() + move_dist * move_dir_world
-
-            self.motion_target_pos = target_pos
-            self.motion_target_orn = base_orn.copy()
+        elif state == "lift_object":
+            # 闭爪后直接沿 world z 方向抬起物体，完成简单 pick-up。
+            self.motion_target_pos = ee_pos.copy() + np.array([0.0, 0.0, 0.2], dtype=float)
+            self.motion_target_orn = ee_orn.copy()
 
     def switch_to_next_state(self):
         self.state_idx += 1
@@ -427,8 +353,7 @@ class PickUpSim(object):
             self.target_pos = ee_pos.copy()
             self.target_orn = ee_orn.copy()
 
-        elif self.state in ["home", "approach_mugtree", "approach_manipulated_cup",
-                            "move_pregrasp", "move_grasp", "extract_cup"]:
+        elif self.state in ["home", "move_pregrasp", "move_grasp", "lift_object"]:
             self.target_pos = (1.0 - s) * self.motion_start_pos + s * self.motion_target_pos
             self.target_orn = quat_slerp(self.motion_start_orn, self.motion_target_orn, s)
             self.solve_ik_and_apply(self.target_pos, self.target_orn)
@@ -491,6 +416,34 @@ class PickUpSim(object):
         )
         rgb = np.asarray(rgba, dtype=np.uint8)[..., :3]
         return rgb
+    
+    def center_crop_resize_rgb(self, img, out_size=224):
+        """
+        img: RGB image, shape [H, W, 3]
+        return: RGB image, shape [out_size, out_size, 3]
+        """
+        h, w = img.shape[:2]
+
+        # 先中心裁剪成正方形，避免直接 resize 导致图像变形
+        side = min(h, w)
+        x0 = (w - side) // 2
+        y0 = (h - side) // 2
+
+        crop = img[y0:y0 + side, x0:x0 + side]
+
+        # 再 resize 到 224x224
+        img_224 = cv2.resize(
+            crop,
+            (out_size, out_size),
+            interpolation=cv2.INTER_AREA
+        )
+
+        return img_224
+    
+    def get_cropped_agentview_image(self, out_size=224):
+        rgb = self.get_agentview_image()
+        cropped_rgb = self.center_crop_resize_rgb(rgb, out_size)
+        return cropped_rgb
 
     def get_agentview_image(self):
         # target = [0.4, 0.00, 0.2]
@@ -583,37 +536,27 @@ class PickUpSim(object):
             basePosition=pos_to_visualize.tolist()
         )
 
-    def is_success(self, height_threshold=0.1, dist_threshold=0.1):
-        """
-        判断任务是否成功：
-        1. 杯子被抬起（高度变化）
-        2. 杯子远离 mug tree
-        """
+    def is_success(self, lift_height_threshold=0.08, require_contact=True):
+        if not hasattr(self, "pick_up_obj_id"):
+            return False
 
-        # 当前杯子位置
-        cup_pos, _ = get_true_PositionAndOrientation(
-            self.bullet_client, self.manipulated_cup_id
+        obj_pos, _ = get_true_PositionAndOrientation(
+            self.bullet_client, self.pick_up_obj_id
         )
+        obj_pos = np.array(obj_pos, dtype=float)
 
-        # mug tree 中心
-        tree_pos, _ = get_COM_PositionAndOrientation(
-            self.bullet_client, self.mug_tree
-        )
+        if self.initial_obj_pos is None:
+            lifted = obj_pos[2] > lift_height_threshold
+        else:
+            lifted = (obj_pos[2] - self.initial_obj_pos[2]) > lift_height_threshold
+
+        if not require_contact:
+            return bool(lifted)
 
         contacts = self.bullet_client.getContactPoints(
             bodyA=self.panda,
-            bodyB=self.manipulated_cup_id
+            bodyB=self.pick_up_obj_id,
         )
-
         grasped = len(contacts) > 0
 
-        cup_pos = np.array(cup_pos)
-        tree_pos = np.array(tree_pos)
-
-        # 条件1：高度变高（被拿起）
-        lifted = cup_pos[2] > height_threshold
-
-        # 条件2：远离 rack
-        far_enough = np.linalg.norm(cup_pos - tree_pos) > dist_threshold
-
-        return lifted and far_enough and grasped
+        return bool(lifted and grasped)

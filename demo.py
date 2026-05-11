@@ -23,14 +23,16 @@ p.setGravity(0,0,-9.8)
 Sim = PickUpSim(p, offset=[0, 0, 0])
 Sim.make_scene(env_mesh_path= "./data/background/patched_table/tabletop.obj",
                manipulated_obj_path= "./data/objects/banana/banana.obj",
-               initial_grasp_path= None,
+               initial_grasp_path= "./data/objects/banana/grasp.yaml",
                obj_pose_offset = [0.5, 0.0, 0.1],
                obj_euler_offset = [math.pi/2, 0.0, math.pi/2],)
 
-rgb = Sim.get_agentview_image()
-cv2.imwrite("camera.png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+
 try:
-    while True:
+    while (not Sim.done):
         p.stepSimulation()
+        Sim.step()
+        # time.sleep(0.05)
+        # print(Sim.is_success())
 except KeyboardInterrupt:
     print("Stopped by user")
