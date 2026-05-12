@@ -1,32 +1,34 @@
 import random
-
 import pybullet as p
 import pybullet_data as pd
 import math
 import time
 import numpy as np
-#from CupOnRackSim import CupOnRackSim, CupOnRackSimAuto
-from PickUpSim import CupOnRackSim
+from PickUpSim import PickUpSim
 from episode_writer import EpisodeWriter
 import json
 from pathlib import Path
 from icecream import ic
-    
-def collect_one_episode(sim :CupOnRackSim, episode_dir, fps=20, 
-                        max_steps=3000, record_every_n_sim_steps=12,
-                        cluster_offset=None,  
-                        z_rot=None ):
+from tqdm import tqdm    
+def collect_one_episode(sim :PickUpSim, 
+                        episode_dir,
+                        meta_seed,
+                        fps=20, 
+                        max_steps=1000, 
+                        record_every_n_sim_steps=6,
+                        ):
     """
     PyBullet control_dt = 1/240
     如果每12个sim step录一帧 -> 20 FPS
     """
+
+    ## init episode writer
     writer = EpisodeWriter(episode_dir, 
                            fps=fps,
-                           extra_meta={
-                               "cluster_offset": cluster_offset,
-                               "z_rot": z_rot,
-                               }
-                            )
+                           if_agent_view  = True,
+                           if_eye_in_hand = False, 
+                           extra_meta={"meta_seed": meta_seed,}
+                         )
 
     sim.done = False
     sim_step = 0
@@ -35,7 +37,7 @@ def collect_one_episode(sim :CupOnRackSim, episode_dir, fps=20,
 
     while (not sim.done) and sim_step < max_steps:
         if sim_step % record_every_n_sim_steps == 0:
-            obs = sim.collect_observation()   # 先采当前观测 s_t
+            obs = sim.collect_observation(direct= False)   # 先采当前观测 s_t
         # 计算并下发本步控制
         sim.step()   
 
@@ -55,45 +57,54 @@ def collect_one_episode(sim :CupOnRackSim, episode_dir, fps=20,
     writer.close(success=success)
 
 
+if __name__ == "__main__":
+    p.connect(p.DIRECT)
+    # turn off GUI shadows 
+    # seed
+    np.random.seed(42)
+    # seed env randomization
+    _seed = 43
+    NUM_EPISODES = 5
+    BASE_DIR = Path("./DP_data/pickup/episodes")
 
-p.connect(p.DIRECT)
-# turn off GUI shadows 
-p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 0)
-# p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP,1)
-p.setAdditionalSearchPath(pd.getDataPath())
-timeStep=1./240.
-p.setTimeStep(timeStep)
-p.setGravity(0,0,-9.8)
+    for ep in tqdm(range(NUM_EPISODES)):
+        print(f"\n=== Collecting episode {ep:06d} ===")
+        _seed += 1
+        print(f"seed: {_seed}")
 
-# seed
-np.random.seed(42)
+        timeStep=1./120.
+        p.setTimeStep(timeStep)
+        p.setGravity(0, 0, -9.8)
+        episode_dir = BASE_DIR / f"episode_{ep:06d}"
+        episode_dir.mkdir(parents=True, exist_ok=True)
 
+        Sim = PickUpSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = _seed)
 
-NUM_EPISODES = 300
-BASE_DIR = Path("./collected_episodes")
+        Sim.make_scene(env_mesh_path= "./data/background/patched_table/tabletop.obj",
+                    manipulated_obj_path= "./data/objects/banana/banana.obj",
+                    initial_grasp_path= "./data/objects/banana/grasp.yaml",
+                    # x work range : 0.7, 0.4
+                    obj_pose_base = [0.55, 0.0, 0.1],
+                    obj_euler_base = [math.pi/2, 0.0, math.pi/2],
+                    randomize_image_noise= True,
+                    randomize_lighting= True,
+                    randomize_objpose= True,
+                    x_jitter_range= 0.15,
+                    y_jitter_range= 0.2,
+                    z_axis_rotation_range = np.pi,
+                    randomize_distractors= True,
+                    distractor_root= "/mnt/storage/GoogleScannedObjects",
+                    distractor_num_range= (0, 4),
+                    distractor_target_size_range= (0.06, 0.3),
+                    distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
+                    # at least 10 pixel of the target object
+                    distractor_min_target_mask_pixels= 10,)
+        Sim.enable_high_quality_rendering()
 
-for ep in range(NUM_EPISODES):
-    print(f"\n=== Collecting episode {ep:06d} ===")
+        collect_one_episode(
+            sim = Sim,
+            episode_dir = episode_dir,
+            meta_seed = _seed,
+        )
 
-    p.setTimeStep(1. / 240.)
-    p.setGravity(0, 0, -9.8)
-    episode_dir = BASE_DIR / f"episode_{ep:06d}"
-    episode_dir.mkdir(parents=True, exist_ok=True)
-
-    z_rot = math.pi /2
-    cluster_offset = [random.uniform(0.3, 0.5), random.uniform(0.3, 0.4), 0.0]
-    panda = CupOnRackSim(
-        p,
-        offset=[0, 0, 0],
-        cluster_offset= cluster_offset,
-        z_axis_rotation= z_rot
-    )
-
-    collect_one_episode(
-        sim=panda,
-        episode_dir=episode_dir,
-        cluster_offset=cluster_offset,
-        z_rot=z_rot,
-    )
-
-    p.resetSimulation()
+        p.resetSimulation()

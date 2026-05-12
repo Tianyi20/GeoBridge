@@ -4,10 +4,15 @@ import numpy as np
 from pathlib import Path
 
 class EpisodeWriter:
-    def __init__(self, episode_dir, fps = 20, extra_meta = None):
+    def __init__(self, episode_dir, 
+                 if_agent_view  = True,
+                 if_eye_in_hand = False,
+                 fps = 20, extra_meta = None):
         self.episode_dir = Path(episode_dir)
         self.episode_dir.mkdir(parents=True, exist_ok=True)
 
+        self._if_agent_view  = if_agent_view
+        self._if_eye_in_hand = if_eye_in_hand
         self.fps = fps
         self.agentview_writer = None
         self.eyeinhand_writer = None
@@ -26,25 +31,27 @@ class EpisodeWriter:
         return cv2.VideoWriter(str(path), fourcc, fps, (width, height))
 
     def add_step(self, obs, action, timestamp):
-        agent = obs["agentview_image"]
-        eye = obs["robot0_eye_in_hand_image"]
 
-        if self.agentview_writer is None:
-            h, w = agent.shape[:2]
-            self.agentview_writer = self._make_writer(
-                self.episode_dir / "agentview.mp4", w, h, self.fps
-            )
-
-        if self.eyeinhand_writer is None:
-            h, w = eye.shape[:2]
-            self.eyeinhand_writer = self._make_writer(
-                self.episode_dir / "eye_in_hand.mp4", w, h, self.fps
-            )
-
-        # cv2.VideoWriter 要 BGR
-        self.agentview_writer.write(agent[..., ::-1])
-        self.eyeinhand_writer.write(eye[..., ::-1])
-
+        if self._if_agent_view: 
+            agent = obs["agentview_image"]
+            if self.agentview_writer is None:
+                h, w = agent.shape[:2]
+                self.agentview_writer = self._make_writer(
+                    self.episode_dir / "agentview.mp4", w, h, self.fps
+                )
+            # cv2.VideoWriter 要 BGR
+            self.agentview_writer.write(agent[..., ::-1])
+            
+        if self._if_eye_in_hand:
+            eye = obs["robot0_eye_in_hand_image"]
+            if self.eyeinhand_writer is None:
+                h, w = eye.shape[:2]
+                self.eyeinhand_writer = self._make_writer(
+                    self.episode_dir / "eye_in_hand.mp4", w, h, self.fps
+                )
+            
+            self.eyeinhand_writer.write(eye[..., ::-1])
+        # record lowdim state and action
         self.lowdim["robot0_eef_pos"].append(obs["robot0_eef_pos"])
         self.lowdim["robot0_eef_quat"].append(obs["robot0_eef_quat"])
         self.lowdim["robot0_gripper_qpos"].append(obs["robot0_gripper_qpos"])

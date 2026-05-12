@@ -7,7 +7,7 @@ import math
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.env_runner.base_image_runner import BaseImageRunner
 from diffusion_policy.common.pytorch_util import dict_apply
-from CupOnRackEnv import CupOnRackEnv
+from PickUpEnv import CupOnRackEnv
 from diffusion_policy.gym_util.multistep_wrapper import MultiStepWrapper
 from icecream import ic
 from diffusion_policy.gym_util.video_recording_wrapper import VideoRecordingWrapper, VideoRecorder

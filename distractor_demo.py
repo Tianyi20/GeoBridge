@@ -11,6 +11,7 @@ import math
 import time
 import numpy as np
 import cv2
+from utility import compare_rgb
 p.connect(p.DIRECT)
 # p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP,1)
 p.setAdditionalSearchPath(pd.getDataPath())
@@ -23,11 +24,15 @@ Sim = PickUpSim(p, offset=[0, 0, 0], seed = 4122623382)
 Sim.make_scene(env_mesh_path= "./data/background/patched_table/tabletop.obj",
                manipulated_obj_path= "./data/objects/banana/banana.obj",
                initial_grasp_path= "./data/objects/banana/grasp.yaml",
-               obj_pose_base = [0.5, 0.0, 0.1],
+               # x work range : 0.7, 0.4
+               obj_pose_base = [0.55, 0.0, 0.1],
                obj_euler_base = [math.pi/2, 0.0, math.pi/2],
                randomize_image_noise= True,
                randomize_lighting= True,
                randomize_objpose= True,
+               x_jitter_range= 0.15,
+               y_jitter_range= 0.2,
+               z_axis_rotation_range = np.pi,
                randomize_distractors= True,
                distractor_root= "/mnt/storage/GoogleScannedObjects",
                distractor_num_range= (0, 4),
@@ -49,8 +54,12 @@ try:
 
         if sim_step % record_every_n_sim_steps == 0:
             # _, _, RGB, _, _ = Sim.get_agentview_image()
-            RGB = Sim.get_cropped_agentview_image()
-            cv2.imwrite("temp_rgb.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
+            # RGB = Sim.get_cropped_agentview_image()
+            RGB_d = Sim.direct_get_agent_view()
+
+            # cv2.imwrite("temp_rgb.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
+            cv2.imwrite("temp_rgb_debug.png", cv2.cvtColor(RGB_d, cv2.COLOR_RGB2BGR))
+            # compare_rgb(RGB, RGB_d)
         # time.sleep(0.05)
         # print(Sim.is_success())
 

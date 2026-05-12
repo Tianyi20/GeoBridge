@@ -327,3 +327,10 @@ def resize_rgb(img, out_size=224):
     )
 
     return img_224
+
+def compare_rgb(a, b):
+    diff = np.abs(a.astype(np.int16) - b.astype(np.int16))
+    print("shape:", a.shape, b.shape)
+    print("mean diff:", diff.mean())
+    print("max diff:", diff.max())
+    print("same pixels:", np.mean(np.all(diff == 0, axis=-1)) * 100, "%")

@@ -46,7 +46,8 @@ rp = jointPositions
 
 
 class PickUpSim(object):
-    def __init__(self, bullet_client, offset, seed = 42):
+    def __init__(self, bullet_client, offset, 
+                 control_dt = 1.0 / 120.0, seed = 42):
         self.bullet_client = bullet_client
         self.bullet_client.setPhysicsEngineParameter(solverResidualThreshold=0)
 
@@ -59,7 +60,7 @@ class PickUpSim(object):
         self.distractorDR = DistractorDR(self.bullet_client, seed=seed)
 
         self.offset = np.array(offset)
-        self.control_dt = 1.0 / 240.0
+        self.control_dt = control_dt
         self.t = 0.0
         # Set GUI's Sky to white, only influence GUI
         self.bullet_client.configureDebugVisualizer(rgbBackground=[1, 1, 1])
@@ -147,6 +148,9 @@ class PickUpSim(object):
                    obj_euler_base = [0.0, 0.0, 0.0],
                    randomize_lighting = True,
                    randomize_objpose  = True,
+                   x_jitter_range    = 0.2,
+                   y_jitter_range    = 0.2,
+                   z_axis_rotation_range = np.pi,
                    randomize_image_noise = True,
                    randomize_distractors = True,
                    distractor_root = "/mnt/storage/GoogleScannedObjects",
@@ -186,8 +190,9 @@ class PickUpSim(object):
         
         if randomize_objpose:
             obj_xy_jitter, obj_z_axis_rotation_jitter = self.objposeDR.sample_obj_pose_randomization(
-                xy_jitter_range=0.2,
-                z_axis_rotation_range=np.pi,
+                x_jitter_range = x_jitter_range,
+                y_jitter_range = y_jitter_range,
+                z_axis_rotation_range= z_axis_rotation_range,
             )
             obj_pose_base[:2] += obj_xy_jitter
             obj_euler_base[2] += obj_z_axis_rotation_jitter
@@ -452,7 +457,7 @@ class PickUpSim(object):
 
         return self.target_pos, self.target_orn
 
-    def collect_observation(self):
+    def collect_observation(self, direct = False):
         """
         TODO: Collect observations for diffusion policy
         obs = {
@@ -470,9 +475,14 @@ class PickUpSim(object):
             self.bullet_client.getJointState(self.panda, 10)[0],
         ], dtype=np.float32)
 
-        _, _, agentview_rgba, _, _ = self.get_agentview_image()
-        agentview = agentview_rgba[..., :3]
-        agentview224 = resize_rgb(agentview, out_size=224)
+        # direct get 224 by approximate intrinsic
+        # else get 960 540 then rescale 
+        if direct: 
+            agentview224 = self.direct_get_agent_view()
+        else:
+            _, _, agentview_rgba, _, _ = self.get_agentview_image()
+            agentview = agentview_rgba[..., :3]
+            agentview224 = resize_rgb(agentview, out_size=224)
         # eye_in_hand = self.get_eye_in_hand_image()
 
         obs = {
@@ -556,6 +566,57 @@ class PickUpSim(object):
         viewMatrix = cvPose2BulletView(extrinsic_cam)
 
         return self.render_camera(W, H, viewMatrix, projectionMatrix)
+
+    def direct_get_agent_view(self, out_size=224):
+        """
+        Directly render agent view at out_size x out_size.
+
+        This approximates:
+            get_agentview_image() at 960x540
+            -> cv2.resize(..., (out_size, out_size), interpolation=cv2.INTER_AREA)
+
+        Because your resize_rgb directly stretches 960x540 to 224x224,
+        we scale fx, cx by out_size / 960 and fy, cy by out_size / 540.
+        """
+        W0 = 960
+        H0 = 540
+
+        W = out_size
+        H = out_size
+
+        near = 0.02
+        far = 2.0
+
+        extrinsic_cam = np.array([
+            [-0.808,   0.3283, -0.4892,  0.8758],
+            [ 0.5837,  0.3327, -0.7407,  0.6006],
+            [-0.0804, -0.884,  -0.4604,  0.4729],
+            [ 0.0,     0.0,     0.0,     1.0   ],
+        ], dtype=np.float32)
+
+        intrinsic_960x540 = np.array([
+            [691.7508,   0.0,     486.7637],
+            [  0.0,    692.2195, 273.4784],
+            [  0.0,      0.0,       1.0   ],
+        ], dtype=np.float32)
+
+        sx = W / W0
+        sy = H / H0
+
+        intrinsic = intrinsic_960x540.copy()
+        intrinsic[0, 0] *= sx  # fx
+        intrinsic[0, 2] *= sx  # cx
+        intrinsic[1, 1] *= sy  # fy
+        intrinsic[1, 2] *= sy  # cy
+
+        projectionMatrix = cvK2BulletP(intrinsic, W, H, near, far)
+        viewMatrix = cvPose2BulletView(extrinsic_cam)
+
+        _, _, rgba, _, _ = self.render_camera(W, H, viewMatrix, projectionMatrix)
+
+        rgb = rgba[..., :3]
+        return rgb.astype(np.uint8)
+
   
     def get_eye_in_hand_image(self, width=224, height=224):
         camera_link = 8  # panda_hand

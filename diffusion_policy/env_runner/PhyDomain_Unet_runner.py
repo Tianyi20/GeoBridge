@@ -10,7 +10,7 @@ import tqdm
 import wandb
 import wandb.sdk.data_types.video as wv
 
-from CupOnRackEnv import CupOnRackEnv
+from PickUpEnv import CupOnRackEnv
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.env_runner.base_image_runner import BaseImageRunner
 from diffusion_policy.gym_util.async_vector_env import AsyncVectorEnv

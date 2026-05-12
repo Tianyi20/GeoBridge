@@ -78,21 +78,25 @@ class PickUpEnv(gym.Env):
         self.sim.enable_high_quality_rendering()
 
         self.sim.make_scene(
-            env_mesh_path="./data/background/patched_table/tabletop.obj",
-            manipulated_obj_path="./data/objects/banana/banana.obj",
-            initial_grasp_path="./data/objects/banana/grasp.yaml",
-            obj_pose_base=[0.5, 0.0, 0.1],
-            obj_euler_base=[math.pi / 2, 0.0, math.pi / 2],
-            randomize_image_noise=self.randomize_image_noise,
-            randomize_lighting=self.randomize_lighting,
-            randomize_objpose=self.randomize_objpose,
-            randomize_distractors=self.randomize_distractors,
-            distractor_root="/mnt/storage/GoogleScannedObjects",
-            distractor_num_range=(0, 4),
-            distractor_target_size_range=(0.06, 0.3),
-            distractor_workspace=((0.05, 0.78), (-0.42, 0.42)),
-            distractor_min_target_mask_pixels=10,
-        )
+            env_mesh_path= "./data/background/patched_table/tabletop.obj",
+            manipulated_obj_path= "./data/objects/banana/banana.obj",
+            initial_grasp_path= "./data/objects/banana/grasp.yaml",
+            # x work range : 0.7, 0.4
+            obj_pose_base = [0.55, 0.0, 0.1],
+            obj_euler_base = [math.pi/2, 0.0, math.pi/2],
+            randomize_image_noise= False,
+            randomize_lighting= True,
+            randomize_objpose= True,
+            x_jitter_range= 0.15,
+            y_jitter_range= 0.2,
+            z_axis_rotation_range = np.pi,
+            randomize_distractors= True,
+            distractor_root= "/mnt/storage/GoogleScannedObjects",
+            distractor_num_range= (0, 4),
+            distractor_target_size_range= (0.06, 0.3),
+            distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
+            # at least 10 pixel of the target object
+            distractor_min_target_mask_pixels= 10,)
         
 
     def reset(self):

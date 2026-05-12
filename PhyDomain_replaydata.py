@@ -19,8 +19,7 @@ def read_video_to_numpy(video_path):
     reader.close()
     return np.stack(frames, axis=0)
 
-
-def collect_dataset_from_phydomain(data_root, out_path, only_success=True):
+def collect_dataset_from_phydomain(data_root, out_path, only_success=True, use_eye_in_hand=False):
     data_root = Path(data_root)
 
     buffer = ReplayBuffer.create_empty_zarr(storage=zarr.MemoryStore())
@@ -49,73 +48,88 @@ def collect_dataset_from_phydomain(data_root, out_path, only_success=True):
             num_skipped += 1
             continue
 
-        # 1. 读视频
         agentview_path = ep_dir / "agentview.mp4"
-        eye_in_hand_path = ep_dir / "eye_in_hand.mp4"
         lowdim_path = ep_dir / "lowdim.npz"
 
-        if (not agentview_path.exists()) or (not eye_in_hand_path.exists()) or (not lowdim_path.exists()):
+        required_paths = [agentview_path, lowdim_path]
+
+        if use_eye_in_hand:
+            eye_in_hand_path = ep_dir / "eye_in_hand.mp4"
+            required_paths.append(eye_in_hand_path)
+
+        if not all(path.exists() for path in required_paths):
             print(f"[skip] {ep_dir.name}: missing data files")
             num_skipped += 1
             continue
 
         agentview_image = read_video_to_numpy(agentview_path)
-        robot0_eye_in_hand_image = read_video_to_numpy(eye_in_hand_path)
-
-        # 2. 读 lowdim
         lowdim = np.load(lowdim_path)
 
         episode = {
             "agentview_image": agentview_image,
-            "robot0_eye_in_hand_image": robot0_eye_in_hand_image,
             "robot0_eef_pos": lowdim["robot0_eef_pos"],
             "robot0_eef_quat": lowdim["robot0_eef_quat"],
             "robot0_gripper_qpos": lowdim["robot0_gripper_qpos"],
             "action": lowdim["action"],
         }
 
-        # 可选：做一下长度一致性检查
+        if use_eye_in_hand:
+            episode["robot0_eye_in_hand_image"] = read_video_to_numpy(eye_in_hand_path)
+
         T = episode["action"].shape[0]
-        if not (
-            episode["agentview_image"].shape[0] == T and
-            episode["robot0_eye_in_hand_image"].shape[0] == T and
-            episode["robot0_eef_pos"].shape[0] == T and
-            episode["robot0_eef_quat"].shape[0] == T and
-            episode["robot0_gripper_qpos"].shape[0] == T
-        ):
+
+        keys_to_check = [
+            "agentview_image",
+            "robot0_eef_pos",
+            "robot0_eef_quat",
+            "robot0_gripper_qpos",
+        ]
+
+        if use_eye_in_hand:
+            keys_to_check.append("robot0_eye_in_hand_image")
+
+        if not all(episode[k].shape[0] == T for k in keys_to_check):
             print(f"[skip] {ep_dir.name}: length mismatch")
             num_skipped += 1
             continue
 
-        # 3. 加到 replay buffer
         buffer.add_episode(episode)
         num_added += 1
 
-        print(
+        msg = (
             f"[add] {ep_dir.name}: "
-            f"len={episode['action'].shape[0]}, "
+            f"len={T}, "
             f"agentview={episode['agentview_image'].shape}, "
-            f"eye_in_hand={episode['robot0_eye_in_hand_image'].shape}, "
+        )
+
+        if use_eye_in_hand:
+            msg += f"eye_in_hand={episode['robot0_eye_in_hand_image'].shape}, "
+
+        msg += (
             f"action={lowdim['action'].shape}, "
             f"success={success}"
         )
 
-    print(
-        f"\nDone. total={num_total}, added={num_added}, skipped={num_skipped}"
-    )
+        print(msg)
+
+    print(f"\nDone. total={num_total}, added={num_added}, skipped={num_skipped}")
 
     buffer.save_to_path(out_path)
     return buffer
 
 
 if __name__ == "__main__":
-    data_root = "/home/iadc/PhyDomain/collected_episodes"
-    out_path = "/home/iadc/PhyDomain/CupOnRack_fixed_angle.zarr"
+    data_root = "./DP_data/pickup/episodes"
+    out_path = "./DP_data/pickup/pickup.zarr"
 
+    use_eye_in_hand=False
+
+    
     buffer = collect_dataset_from_phydomain(
         data_root,
         out_path,
-        only_success=True
+        only_success=True,
+        use_eye_in_hand=False,   # 没有 eye_in_hand.mp4 就设 False
     )
     print("done")
 
