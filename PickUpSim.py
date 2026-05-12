@@ -3,9 +3,12 @@ import cv2
 import gym
 import numpy as np
 import math
-from icecream import ic
 import pybullet_data
 from utility import load_initial_grasp_pose
+from VisualDR.lightingDR import LightingDR
+from VisualDR.ImgNoiseDR import ImgNoiseDR
+from VisualDR.objposeDR import ObjPoseDR
+from VisualDR.distractorDR import DistractorDR
 
 from pybullet_utility import (
     load_models,
@@ -43,16 +46,23 @@ rp = jointPositions
 
 
 class PickUpSim(object):
-    def __init__(self, bullet_client, offset):
+    def __init__(self, bullet_client, offset, seed = 42):
         self.bullet_client = bullet_client
         self.bullet_client.setPhysicsEngineParameter(solverResidualThreshold=0)
+
+        # Visual domain randomizers. Each randomizer owns its own RNG and state.
+        # Keep bullet_client inside every module so each multiprocessing worker can
+        # create an independent PickUpSim / VisualDR stack.
+        self.lightingDR = LightingDR(self.bullet_client, seed=seed)
+        self.ImgNoiseDR = ImgNoiseDR(self.bullet_client, seed=seed)
+        self.objposeDR = ObjPoseDR(self.bullet_client, seed=seed)
+        self.distractorDR = DistractorDR(self.bullet_client, seed=seed)
 
         self.offset = np.array(offset)
         self.control_dt = 1.0 / 240.0
         self.t = 0.0
         # Set GUI's Sky to white, only influence GUI
-        self.bullet_client.configureDebugVisualizer(rgbBackground=[1, 1, 1]) 
-
+        self.bullet_client.configureDebugVisualizer(rgbBackground=[1, 1, 1])
         self.finger_target = 0.04
         self.safe_approach = 0.1
         self.safe_grasp_offset = 0.05
@@ -62,6 +72,7 @@ class PickUpSim(object):
         flags = self.bullet_client.URDF_ENABLE_CACHED_GRAPHICS_SHAPES
         base_orn = self.bullet_client.getQuaternionFromEuler([0, 0, 0])
 
+        ################## Load Panda robot #################
         self.panda = self.bullet_client.loadURDF(
             "franka_panda/panda.urdf",
             np.array([0, 0, 0]) + self.offset,
@@ -69,11 +80,6 @@ class PickUpSim(object):
             useFixedBase=True,
             flags=flags,
         )
-
-        ## Make scene, TODO: randomization
-        ## invoke make scene outside
-        ## Load initial guess
-
         c = self.bullet_client.createConstraint(
             self.panda, 9, self.panda, 10,
             jointType=self.bullet_client.JOINT_GEAR,
@@ -101,7 +107,7 @@ class PickUpSim(object):
         self.home_ee_pos = np.array(self.home_ee_pos, dtype=float)
         self.home_ee_orn = np.array(self.home_ee_orn, dtype=float)
 
-        # ========= pick up状态机 =========
+        ########333#========= pick up状态机 =========###################
         self.states = [
             "home",
             "move_pregrasp",
@@ -137,8 +143,19 @@ class PickUpSim(object):
                    env_mesh_path        = None,
                    manipulated_obj_path = None,
                    initial_grasp_path = None,
-                   obj_pose_offset = [0.5, 0.0, 0.0],
-                   obj_euler_offset = [0.0, 0.0, 0.0],
+                   obj_pose_base = [0.5, 0.0, 0.0],
+                   obj_euler_base = [0.0, 0.0, 0.0],
+                   randomize_lighting = True,
+                   randomize_objpose  = True,
+                   randomize_image_noise = True,
+                   randomize_distractors = True,
+                   distractor_root = "/mnt/storage/GoogleScannedObjects",
+                   distractor_num_range = (1, 5),
+                   distractor_target_size_range = (0.06, 0.16),
+                   distractor_workspace = ((0.25, 0.78), (-0.42, 0.42)),
+                   distractor_clearance = 0.035,
+                   distractor_path_clearance = 0.10,
+                   distractor_min_target_mask_pixels = 1,
                    ):
         
         ## TODO: visual things to be randomized:
@@ -149,15 +166,38 @@ class PickUpSim(object):
         # 5. position, orientation, specular characteristics of the lights
         # 6. types and amount of random noise added to the images 
 
-        # TODO: always enable high quality rendering pipeline
-        # TODO: always enable shadows
+        # always enable high quality rendering pipeline and shadows
+
+        """ ################ Load basic scene assets ################ """
+        # Avoid mutating caller-provided lists/default arguments when pose randomization is enabled.
+        obj_pose_base = np.array(obj_pose_base, dtype=float).copy()
+        obj_euler_base = np.array(obj_euler_base, dtype=float).copy()
 
         self.env_mesh_path = env_mesh_path
         self.pick_up_obj_path = manipulated_obj_path
         self.convex_pick_up_obj_path = coacd_convex_decomposition(self.pick_up_obj_path)
         self.com_pick_up_obj = get_com(self.pick_up_obj_path)
 
-        # TODO: Load ground plane but make it invisible
+        """ ################ Basic Visual Randomization ############### """
+        if randomize_lighting:
+            self.lightingDR.sample_lighting_randomization()
+        else:
+            self.lightingDR.reset_to_default()
+        
+        if randomize_objpose:
+            obj_xy_jitter, obj_z_axis_rotation_jitter = self.objposeDR.sample_obj_pose_randomization(
+                xy_jitter_range=0.2,
+                z_axis_rotation_range=np.pi,
+            )
+            obj_pose_base[:2] += obj_xy_jitter
+            obj_euler_base[2] += obj_z_axis_rotation_jitter
+
+        if randomize_image_noise:
+            self.ImgNoiseDR.sample_image_noise_randomization()
+        else:
+            self.ImgNoiseDR.reset()
+
+        # Load ground plane but make it invisible
         self.bullet_client.setAdditionalSearchPath(pybullet_data.getDataPath())
 
         # Load PyBullet's default ground plane
@@ -172,7 +212,7 @@ class PickUpSim(object):
             -1,
             rgbaColor=[1, 1, 1, 0],  # alpha = 0
         )
-        # TODO: load background, but make it non-collidable
+        # load background, but make it non-collidable
         self.env_mesh = load_models(
             self.bullet_client,
             visual_mesh_file=self.env_mesh_path,
@@ -186,21 +226,71 @@ class PickUpSim(object):
             visual_mesh_file=self.pick_up_obj_path,
             vhacd_mesh_file=self.convex_pick_up_obj_path,
             desired_mass=0.5,
-            position=np.array(obj_pose_offset),
-            baseOrientation=self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_offset)),
+            position=np.array(obj_pose_base),
+            baseOrientation=self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_base)),
             center_of_mass=np.array(self.com_pick_up_obj),
             lateral_friction=0.6,
         )
         self.initial_grasp_guess = load_initial_grasp_pose(initial_grasp_path)
 
-        # waite scene stable
+        # Let the manipulated object settle first. The resulting AABB/grasp pose is
+        # used to reject distractor placements around the target and robot path.
         self.waite_scene_stable()
+
+
+        """############# Distractor Domain randomization ##############"""
+        if randomize_distractors:
+            self.distractorDR.sample_and_load_distractors(
+                distractor_root=distractor_root,
+                num_range=distractor_num_range,
+                target_size_range=distractor_target_size_range,
+                workspace=distractor_workspace,
+                clearance=distractor_clearance,
+                path_clearance=distractor_path_clearance,
+                min_target_mask_pixels=distractor_min_target_mask_pixels,
+                target_body_id=self.pick_up_obj_id,
+                robot_body_id=self.panda,
+                robot_base_offset=self.offset,
+                planned_waypoints=self.get_state_machine_ee_waypoints(),
+                render_agentview_fn=self.get_agentview_image,
+                end_effector_index=pandaEndEffectorIndex,
+                ik_lower_limits=ll,
+                ik_upper_limits=ul,
+                ik_joint_ranges=jr,
+                get_current_arm_joints_fn=self.get_current_arm_joints,
+                quat_slerp_fn=quat_slerp,
+                panda_num_dofs=pandaNumDofs,
+            )
+        else:
+            self.distractorDR.clear_distractors()
+
+        # Step a few frames after static distractor creation so broad-phase contacts
+        # are updated before collecting observations.
+        for _ in range(20):
+            self.bullet_client.stepSimulation()
 
         obj_pos, obj_orn = get_true_PositionAndOrientation(
             self.bullet_client, self.pick_up_obj_id
         )
         self.initial_obj_pos = np.array(obj_pos, dtype=float)
         self.initial_obj_orn = np.array(obj_orn, dtype=float)
+
+    def get_state_machine_ee_waypoints(self):
+        """Approximate the EE path used by the pick-up state machine."""
+        grasp_pos, grasp_orn = self.get_initial_guess_grasp()
+
+        pregrasp_pos = grasp_pos.copy()
+        pregrasp_pos[2] += self.safe_approach
+
+        lift_pos = grasp_pos.copy()
+        lift_pos[2] += 0.2
+
+        return [
+            (self.home_ee_pos.copy(), self.home_ee_orn.copy()),
+            (pregrasp_pos, grasp_orn.copy()),
+            (grasp_pos.copy(), grasp_orn.copy()),
+            (lift_pos, grasp_orn.copy()),
+        ]
 
     def waite_scene_stable(self, waite_steps=1000, vel_threshold=0.005):       
         steps = 0 
@@ -214,7 +304,6 @@ class PickUpSim(object):
             if speed1 < vel_threshold:
                 print("Scene stabilized.")
                 return True
-
 
         print("Warning: Scene did not stabilize within timeout.")
         return False
@@ -381,7 +470,8 @@ class PickUpSim(object):
             self.bullet_client.getJointState(self.panda, 10)[0],
         ], dtype=np.float32)
 
-        agentview = self.get_agentview_image()
+        _, _, agentview_rgba, _, _ = self.get_agentview_image()
+        agentview = agentview_rgba[..., :3]
         eye_in_hand = self.get_eye_in_hand_image()
 
         obs = {
@@ -402,22 +492,48 @@ class PickUpSim(object):
         return action
 
 
+    def apply_image_noise(self, rgb):
+        return self.ImgNoiseDR.apply_image_noise(rgb)
+
+
     def render_camera(self, width, height, view_matrix, proj_matrix):
-        _, _, rgba, _, _ = self.bullet_client.getCameraImage(
+        light_cfg = self.lightingDR.light_cfg
+
+        w, h, rgba, depth, seg = self.bullet_client.getCameraImage(
             width=width,
             height=height,
             viewMatrix=view_matrix,
             projectionMatrix=proj_matrix,
             renderer=self.bullet_client.ER_BULLET_HARDWARE_OPENGL,
-            # lightDirection=[0, -1, 0.8],               
-            # lightColor=[1, 1, 1],                   
-            # lightDistance=3.0,                      
-            # shadow=1,
+            lightDirection=light_cfg["lightDirection"],
+            lightColor=light_cfg["lightColor"],
+            lightDistance=light_cfg["lightDistance"],
+            lightAmbientCoeff=light_cfg["lightAmbientCoeff"],
+            lightDiffuseCoeff=light_cfg["lightDiffuseCoeff"],
+            lightSpecularCoeff=light_cfg["lightSpecularCoeff"],
+            shadow=light_cfg["shadow"],
         )
-        rgb = np.asarray(rgba, dtype=np.uint8)[..., :3]
-        return rgb
-    
+
+        rgba = np.asarray(rgba, dtype=np.uint8).reshape(h, w, 4).copy()
+        depth = np.asarray(depth, dtype=np.float32).reshape(h, w)
+        seg = np.asarray(seg, dtype=np.int64).reshape(h, w)
+
+        # DIRECT/headless change sky to pure black
+
+        bg_mask = seg < 0
+        rgba[bg_mask, :3] = 0
+        rgba[bg_mask, 3] = 255
+
+        rgb = rgba[..., :3]
+        rgb = self.apply_image_noise(rgb)
+        rgba[..., :3] = rgb
+
+
+        return w, h, rgba, depth, seg
+
+
     def center_crop_resize_rgb(self, img, out_size=224):
+    # TODO： change to diffusion policy's rescale method
         """
         img: RGB image, shape [H, W, 3]
         return: RGB image, shape [out_size, out_size, 3]
@@ -441,17 +557,12 @@ class PickUpSim(object):
         return img_224
     
     def get_cropped_agentview_image(self, out_size=224):
-        rgb = self.get_agentview_image()
+        _, _, rgba, _, _ = self.get_agentview_image()
+        rgb = rgba[..., :3]
         cropped_rgb = self.center_crop_resize_rgb(rgb, out_size)
         return cropped_rgb
 
     def get_agentview_image(self):
-        # target = [0.4, 0.00, 0.2]
-        # dist = 1.5
-        # yaw = 90 
-        # pitch = -45  
-        # roll = 0
-        # up_axis = 2
         W = 960
         H = 540
         near = 0.02
@@ -466,7 +577,6 @@ class PickUpSim(object):
                             [  0.,      0.,       1.,  ],], dtype=np.float32)
         projectionMatrix = cvK2BulletP(intrinsic, W, H, near, far)
         viewMatrix = cvPose2BulletView(extrinsic_cam)
-
 
         return self.render_camera(W, H, viewMatrix, projectionMatrix)
   
@@ -495,7 +605,6 @@ class PickUpSim(object):
         ], dtype=np.float32)
 
         cam_pos = link_pos + rot @ local_offset
-        # self.visualize_camera(cam_pos)
         # 相机lookat方向
         cam_forward = rot @ np.array([0, 0, 1], dtype=np.float32)
         cam_up = rot @ np.array([0, -1, 0], dtype=np.float32)
@@ -515,26 +624,9 @@ class PickUpSim(object):
             farVal=2.0
         )
 
-        return self.render_camera(width, height, view, proj)
+        _, _, rgba, _, _ = self.render_camera(width, height, view, proj)
+        return rgba[..., :3]
     
-    def visualize_camera(self, pos_to_visualize):
-        """
-        use a red sphere to visualize given pose
-        """
-        radius = 0.01  # 1cm 小球
-
-        visual_shape = self.bullet_client.createVisualShape(
-            shapeType=self.bullet_client.GEOM_SPHERE,
-            radius=radius,
-            rgbaColor=[1, 0, 0, 1]  # 红色
-        )
-
-        # 创建一个纯视觉 object（无碰撞）
-        self.camera_marker = self.bullet_client.createMultiBody(
-            baseMass=0,
-            baseVisualShapeIndex=visual_shape,
-            basePosition=pos_to_visualize.tolist()
-        )
 
     def is_success(self, lift_height_threshold=0.08, require_contact=True):
         if not hasattr(self, "pick_up_obj_id"):
@@ -560,3 +652,15 @@ class PickUpSim(object):
         grasped = len(contacts) > 0
 
         return bool(lifted and grasped)
+
+    def enable_high_quality_rendering(self):
+        try:
+            self.bullet_client.configureDebugVisualizer(
+                self.bullet_client.COV_ENABLE_SHADOWS, 1
+            )
+            self.bullet_client.configureDebugVisualizer(
+                self.bullet_client.COV_ENABLE_RENDERING, 1
+            )
+            print("Enabled high quality rendering.")
+        except Exception:
+            pass

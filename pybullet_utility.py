@@ -229,3 +229,22 @@ def cvPose2BulletView(T):
     # The transpose is needed for respecting the array structure of the OpenGL
     viewMatrix = T.T.reshape(16)
     return viewMatrix
+
+def visualize_debug(bullet_client, pos_to_visualize):
+    """
+    use a red sphere to visualize given pose
+    """
+    radius = 0.01  # 1cm 小球
+
+    visual_shape = bullet_client.bullet_client.createVisualShape(
+        shapeType=bullet_client.bullet_client.GEOM_SPHERE,
+        radius=radius,
+        rgbaColor=[1, 0, 0, 1]  # 红色
+    )
+
+    # 创建一个纯视觉 object（无碰撞）
+    bullet_client.camera_marker = bullet_client.bullet_client.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=visual_shape,
+        basePosition=pos_to_visualize.tolist()
+    )
