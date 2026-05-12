@@ -4,7 +4,7 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from utility import load_initial_grasp_pose
+from utility import load_initial_grasp_pose, resize_rgb 
 from VisualDR.lightingDR import LightingDR
 from VisualDR.ImgNoiseDR import ImgNoiseDR
 from VisualDR.objposeDR import ObjPoseDR
@@ -472,11 +472,13 @@ class PickUpSim(object):
 
         _, _, agentview_rgba, _, _ = self.get_agentview_image()
         agentview = agentview_rgba[..., :3]
-        eye_in_hand = self.get_eye_in_hand_image()
+        agentview224 = resize_rgb(agentview, out_size=224)
+        # eye_in_hand = self.get_eye_in_hand_image()
 
         obs = {
-            "agentview_image": agentview.astype(np.uint8),                  # (H,W,3)
-            "robot0_eye_in_hand_image": eye_in_hand.astype(np.uint8),      # (H,W,3)
+            "agentview_image": agentview224.astype(np.uint8),                  # (H,W,3)
+            # "robot0_eye_in_hand_image": eye_in_hand.astype(np.uint8),      # (H,W,3)
+            # pickup only use agent view
             "robot0_eef_pos": np.asarray(eef_pos, dtype=np.float32),       # (3,)
             "robot0_eef_quat": np.asarray(eef_quat, dtype=np.float32),     # (4,)
             "robot0_gripper_qpos": gripper_qpos,                           # (2,)
@@ -531,35 +533,10 @@ class PickUpSim(object):
 
         return w, h, rgba, depth, seg
 
-
-    def center_crop_resize_rgb(self, img, out_size=224):
-    # TODO： change to diffusion policy's rescale method
-        """
-        img: RGB image, shape [H, W, 3]
-        return: RGB image, shape [out_size, out_size, 3]
-        """
-        h, w = img.shape[:2]
-
-        # 先中心裁剪成正方形，避免直接 resize 导致图像变形
-        side = min(h, w)
-        x0 = (w - side) // 2
-        y0 = (h - side) // 2
-
-        crop = img[y0:y0 + side, x0:x0 + side]
-
-        # 再 resize 到 224x224
-        img_224 = cv2.resize(
-            crop,
-            (out_size, out_size),
-            interpolation=cv2.INTER_AREA
-        )
-
-        return img_224
-    
     def get_cropped_agentview_image(self, out_size=224):
         _, _, rgba, _, _ = self.get_agentview_image()
         rgb = rgba[..., :3]
-        cropped_rgb = self.center_crop_resize_rgb(rgb, out_size)
+        cropped_rgb = resize_rgb(rgb, out_size)
         return cropped_rgb
 
     def get_agentview_image(self):

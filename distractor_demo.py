@@ -48,7 +48,8 @@ try:
         sim_step += 1
 
         if sim_step % record_every_n_sim_steps == 0:
-            _, _, RGB, _, _ = Sim.get_agentview_image()
+            # _, _, RGB, _, _ = Sim.get_agentview_image()
+            RGB = Sim.get_cropped_agentview_image()
             cv2.imwrite("temp_rgb.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
         # time.sleep(0.05)
         # print(Sim.is_success())

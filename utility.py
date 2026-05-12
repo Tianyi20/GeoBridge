@@ -6,7 +6,7 @@ import yaml
 import os
 from scipy.spatial.transform import Rotation
 import open3d as o3d
-
+import cv2
 def load_initial_grasp_pose(path: str):
     """
     读取 grasp_pose.yaml / grasp_pose.json
@@ -312,3 +312,18 @@ def transform_pcd(pcd, transformation):
     source_o3d.transform(transformation)
 
     return  np.array(source_o3d.points)
+
+
+def resize_rgb(img, out_size=224):
+    """
+    img: RGB image, shape [H, W, 3]
+    return: RGB image, shape [out_size, out_size, 3]
+    """
+    # resize 到 224x224
+    img_224 = cv2.resize(
+        img,
+        (out_size, out_size),
+        interpolation=cv2.INTER_AREA
+    )
+
+    return img_224
