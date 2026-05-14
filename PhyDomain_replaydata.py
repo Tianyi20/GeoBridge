@@ -119,8 +119,8 @@ def collect_dataset_from_phydomain(data_root, out_path, only_success=True, use_e
 
 
 if __name__ == "__main__":
-    data_root = "./DP_data/pickup/episodes"
-    out_path = "./DP_data/pickup/pickup.zarr"
+    data_root = "/mnt/storage/DP_data/pickup/episodes"
+    out_path = "/mnt/storage/DP_data/pickup/pickup.zarr"
 
     use_eye_in_hand=False
 

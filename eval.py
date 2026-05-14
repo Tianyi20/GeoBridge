@@ -1,6 +1,6 @@
 """
 Usage:
-python eval.py --checkpoint /home/iadc/PhyDomain/data/outputs/2026.04.05/14.15.01_train_PhyDomain_image_PhyDomain/checkpoints/latest.ckpt -o data/PhyDomain_eval
+python eval.py --checkpoint data/outputs/2026.05.13/16.16.24_train_Phy_AgentOnly_image_PhyDomainAgentImage/checkpoints/epoch=0050-test_mean_score=1.000.ckpt -o data/PhyDomain_eval
 """
 
 import sys
@@ -17,8 +17,12 @@ import dill
 import wandb
 import json
 # from diffusion_policy.workspace.base_workspace import BaseWorkspace
-from diffusion_policy.workspace.PhyDomain_Unet_workspace import PhyDomainWorkspace
-from diffusion_policy.env_runner.PhyDomain_Unet_runner import PhyDomainImageRunner
+# from diffusion_policy.workspace.PhyDomain_Unet_workspace import PhyDomainWorkspace
+# from diffusion_policy.env_runner.PhyDomain_Unet_runner import PhyDomainImageRunner
+
+from diffusion_policy.workspace.PhyDomain_AgentImage_workspace import PhyAgentImageWorkspace
+from diffusion_policy.env_runner.PhyDomain_PickUpEnv_debug_runner import PickUpEnvDebugRunner
+
 import numpy as np
 
 def to_jsonable(x):
@@ -49,7 +53,7 @@ def main(checkpoint, output_dir, device):
     cfg = payload['cfg']
     cls = hydra.utils.get_class(cfg._target_)
     workspace = cls(cfg, output_dir=output_dir)
-    workspace: PhyDomainWorkspace
+    workspace: PhyAgentImageWorkspace
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
     
     # get policy from workspace
@@ -62,7 +66,16 @@ def main(checkpoint, output_dir, device):
     policy.eval()
     
     # run eval
-    env_runner = PhyDomainImageRunner(output_dir=output_dir)
+    env_runner = PickUpEnvDebugRunner(
+                _seed =43,
+                randomize_image_noise = True,
+                randomize_lighting = True,
+                randomize_objpose = True,
+                randomize_distractors = True,
+                n_obs_steps=2,
+                n_action_steps=2,
+                output_dir=output_dir,
+                )
     runner_log = env_runner.run(policy)
     
     # dump log to json

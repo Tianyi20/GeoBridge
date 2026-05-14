@@ -76,15 +76,15 @@ ema:
   max_value: 0.9999
 
 dataloader:
-  batch_size: 44
-  num_workers: 3
+  batch_size: 160
+  num_workers:  5
   shuffle: True
   pin_memory: True
   persistent_workers: False
 
 val_dataloader:
-  batch_size: 44
-  num_workers: 3
+  batch_size: 160
+  num_workers: 5
   shuffle: False
   pin_memory: True
   persistent_workers: False
@@ -113,8 +113,8 @@ training:
   # training loop control
   # in epochs
   # save checkpoint 的epoch 必须要rollout 不然就没有 test_mean_score
-  rollout_every: 10 
-  checkpoint_every: 10
+  rollout_every: 5 
+  checkpoint_every: 5
   val_every: 2
   sample_every: 2
   # steps per epoch

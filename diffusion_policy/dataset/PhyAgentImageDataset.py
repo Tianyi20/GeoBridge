@@ -22,9 +22,15 @@ class PhyAgentImageDataset(BaseImageDataset):
             ):
         
         super().__init__()
-        self.replay_buffer = ReplayBuffer.copy_from_path(
-            zarr_path, keys=['action', 'agentview_image', 'robot0_eef_pos', 
-                             'robot0_eef_quat', 'robot0_gripper_qpos'])
+        # self.replay_buffer = ReplayBuffer.copy_from_path(
+        #     zarr_path, keys=['action', 'agentview_image', 'robot0_eef_pos', 
+        #                      'robot0_eef_quat', 'robot0_gripper_qpos'])
+
+        self.replay_buffer = ReplayBuffer.create_from_path(
+                                zarr_path,
+                                mode='r'
+                            )
+                
         val_mask = get_val_mask(
             n_episodes=self.replay_buffer.n_episodes, 
             val_ratio=val_ratio,
@@ -78,7 +84,10 @@ class PhyAgentImageDataset(BaseImageDataset):
     def _sample_to_data(self, sample):
         # agent_pos = sample['state'][:,:2].astype(np.float32) # (agent_posx2, block_posex3)
         # image = np.moveaxis(sample['img'],-1,1)/255
-        agentview_image = np.moveaxis(sample['agentview_image'],-1,1)/255
+        # agentview_image = np.moveaxis(sample['agentview_image'],-1,1)/255
+        agentview_image = np.moveaxis(
+            sample['agentview_image'], -1, 1
+        ).astype(np.float32) / 255.0
         # robot0_eye_in_hand_image = np.moveaxis(sample['robot0_eye_in_hand_image'],-1,1)/255
         data = {
             'obs': {

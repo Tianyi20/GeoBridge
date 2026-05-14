@@ -393,7 +393,7 @@ class DistractorDR(object):
 
         x_bounds, y_bounds = workspace
 
-        for k in tqdm(range(num_distractors), desc="Loading distractors"):
+        for k in range(num_distractors):
             accepted = False
             for attempt in range(max_attempts_per_distractor):
                 obj_path = str(rng.choice(meshes))

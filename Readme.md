@@ -33,3 +33,8 @@ blender -b --python usdz_to_obj.py -- \
 ```shell
 blender --background --python bake_ply_vertex_color_blender.py
 ```
+
+Note always `--restart-every` after 5 collections to prevent the process ran out of memory
+```shell
+python record_data_mp_restart.py --num-episodes 3000 --num-processes 24 --base-dir /mnt/storage/DP_data/pickup/episodes --base-seed 43 --restart-every 5
+```
