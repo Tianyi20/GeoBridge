@@ -11,30 +11,43 @@ import math
 import time
 import numpy as np
 import cv2
-p.connect(p.DIRECT)
+p.connect(p.GUI)
 # p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP,1)
 p.setAdditionalSearchPath(pd.getDataPath())
 timeStep=1./240.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = PickUpSim(p, offset=[0, 0, 0], seed = 4123852)
+Sim = PickUpSim(p, offset=[0, 0, 0], seed = 642252)
 
-Sim.make_scene(env_mesh_path= "./data/background/patched_table/tabletop.obj",
-               manipulated_obj_path= "./data/objects/banana/banana.obj",
-               initial_grasp_path= "./data/objects/banana/grasp.yaml",
-               obj_pose_base = [0.5, 0.0, 0.1],
-               obj_euler_base = [math.pi/2, 0.0, 2.3*math.pi/2],
-               randomize_image_noise= True,
-               randomize_lighting= True,
-               randomize_objpose= False,
-               randomize_distractors= True,
-               distractor_root= "/mnt/storage/GoogleScannedObjects",
-               distractor_num_range= (0, 4),
-               distractor_target_size_range= (0.06, 0.3),
-               distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
-               # at least 10 pixel of the target object
-               distractor_min_target_mask_pixels= 10,)
+Sim.make_scene(
+    env_mesh_path= "./data/background/patched_table/tabletop.obj",
+    manipulated_obj_path= "./data/objects/banana/banana.obj",
+    initial_grasp_path= "./data/objects/banana/grasp.yaml",
+    obj_pose_base = [0.5, 0.0, 0.1],
+    obj_euler_base = [math.pi/2, 0.0, math.pi/2],
+    randomize_lighting= True,
+    # outlier scene         
+    randomize_outlscene  = True,
+    outlscene_xyz_jit    = 0.015,
+    outlscene_eul_jit    = 0.00,
+    # plane height randomization
+    randomize_plane_height = True,
+    plane_height_jit = 0.002,
+    randomize_objpose  = True,
+    obj_x_jit    = 0.2,
+    obj_y_jit    = 0.2,
+    obj_z_eul_jit = np.pi,
+    randomize_image_noise= True,
+    randomize_distractors= True,
+    distractor_root= "/mnt/storage/GoogleScannedObjects",
+    distractor_num_range= (0, 4),
+    distractor_target_size_range= (0.06, 0.3),
+    distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
+    # at least 10 pixel of the target object
+    distractor_min_target_mask_pixels= 10,
+    )
+
 Sim.enable_high_quality_rendering()
 
 sim_step = 0

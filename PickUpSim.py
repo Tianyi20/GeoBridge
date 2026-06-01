@@ -4,12 +4,7 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from utility import load_initial_grasp_pose, resize_rgb 
-from VisualDR.lightingDR import LightingDR
-from VisualDR.ImgNoiseDR import ImgNoiseDR
-from VisualDR.objposeDR import ObjPoseDR
-from VisualDR.distractorDR import DistractorDR
-
+from VisualDR import LightingDR, ImgNoiseDR, DistractorDR, PoseDR
 from pybullet_utility import (
     load_models,
     coacd_convex_decomposition,
@@ -22,7 +17,12 @@ from pybullet_utility import (
     cvPose2BulletView
 )
 
-from utility import normalize_vector, quat_from_rotation_matrix
+from utility import (
+    load_initial_grasp_pose, 
+    resize_rgb, 
+    normalize_vector, 
+    quat_from_rotation_matrix
+    ) 
 
 useNullSpace = 1
 ikSolver = 0
@@ -58,7 +58,10 @@ class PickUpSim(object):
         # create an independent PickUpSim / VisualDR stack.
         self.lightingDR = LightingDR(self.bullet_client, seed=seed)
         self.ImgNoiseDR = ImgNoiseDR(self.bullet_client, seed=seed)
-        self.objposeDR = ObjPoseDR(self.bullet_client, seed=seed)
+        self.objposeDR  = PoseDR(self.bullet_client, seed=seed)
+        self.camposeDR  = PoseDR(self.bullet_client, seed=seed)
+        self.outsceneDR = PoseDR(self.bullet_client, seed=seed)
+        self.collplaneDR = PoseDR(self.bullet_client, seed=seed)
         self.distractorDR = DistractorDR(self.bullet_client, seed=seed)
 
         self.offset = np.array(offset)
@@ -172,10 +175,20 @@ class PickUpSim(object):
                    obj_pose_base = [0.5, 0.0, 0.0],
                    obj_euler_base = [0.0, 0.0, 0.0],
                    randomize_lighting = True,
+                   # outlier scene         
+                   randomize_outlscene  = True,
+                   outlscene_xyz_jit    = 0.02,
+                   outlscene_eul_jit    = 0.01,
+                   # plane height randomization
+                   randomize_plane_height = True,
+                   plane_height_jit = 0.008,
                    randomize_objpose  = True,
-                   x_jitter_range    = 0.2,
-                   y_jitter_range    = 0.2,
-                   z_axis_rotation_range = np.pi,
+                   obj_x_jit    = 0.2,
+                   obj_y_jit    = 0.2,
+                   obj_z_eul_jit = np.pi,
+                   randomize_campose = True,
+                   cam_xyz_jit  = 0.01,
+                   cam_eul_jit  = 0.01,
                    randomize_image_noise = True,
                    randomize_distractors = True,
                    distractor_root = "/mnt/storage/GoogleScannedObjects",
@@ -183,7 +196,7 @@ class PickUpSim(object):
                    distractor_target_size_range = (0.06, 0.16),
                    distractor_workspace = ((0.25, 0.78), (-0.42, 0.42)),
                    distractor_clearance = 0.035,
-                   distractor_path_clearance = 0.10,
+                   distractor_path_clearance = 0.04,
                    distractor_min_target_mask_pixels = 1,
                    ):
         
@@ -194,6 +207,11 @@ class PickUpSim(object):
         # 4. number of lights in the scene
         # 5. position, orientation, specular characteristics of the lights
         # 6. types and amount of random noise added to the images 
+
+        # TODO: advanced visual randomization:
+        # 7. outlier scene pose randomization
+        # 8. plane height
+        # 9. camera pose and orn
 
         # always enable high quality rendering pipeline and shadows
 
@@ -214,50 +232,87 @@ class PickUpSim(object):
             self.lightingDR.reset_to_default()
         
         if randomize_objpose:
-            obj_xy_jitter, obj_z_axis_rotation_jitter = self.objposeDR.sample_obj_pose_randomization(
-                x_jitter_range = x_jitter_range,
-                y_jitter_range = y_jitter_range,
-                z_axis_rotation_range= z_axis_rotation_range,
+            objPose, objOrn = self.objposeDR.sample_SE3_randomization(
+                pos=obj_pose_base,
+                orn=self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_base)),
+                x_jitter_range=obj_x_jit,
+                y_jitter_range=obj_y_jit,
+                z_euler_jitter_range=obj_z_eul_jit,
             )
-            obj_pose_base[:2] += obj_xy_jitter
-            obj_euler_base[2] += obj_z_axis_rotation_jitter
+        else:
+            objPose = obj_pose_base
+            objOrn = self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_base))
 
         if randomize_image_noise:
             self.ImgNoiseDR.sample_image_noise_randomization()
         else:
             self.ImgNoiseDR.reset()
 
-        # Load ground plane but make it invisible
-        self.bullet_client.setAdditionalSearchPath(pybullet_data.getDataPath())
+        # Outlier scene mesh pose and invisible collision-plane height.
+        #
+        # The visual scene mesh gets its own pose randomization first.
+        # Then the collision plane follows the randomized mesh z and receives
+        # an extra height jitter:
+        #
+        #   mesh_z  = mesh_z_base
+        #   plane_z = mesh_z_base + ground_z_jit
+        outscene_base_pos = np.array([0.0, 0.0, -0.005], dtype=float)
+        outscene_base_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
 
-        # Load PyBullet's default ground plane
+        if randomize_outlscene:
+            env_mesh_pos, env_mesh_orn = self.outsceneDR.sample_SE3_randomization(
+                pos=outscene_base_pos,
+                orn=outscene_base_orn,
+                x_jitter_range=outlscene_xyz_jit,
+                y_jitter_range=outlscene_xyz_jit,
+                z_jitter_range=outlscene_xyz_jit,
+                x_euler_jitter_range= None,
+                y_euler_jitter_range= None,
+                z_euler_jitter_range=outlscene_eul_jit,
+            )
+        else:
+            env_mesh_pos = outscene_base_pos.copy()
+            env_mesh_orn = outscene_base_orn.copy()
+
+        # collision plane height
+        if randomize_plane_height:
+            ground_pose = self.collplaneDR.sample_pos_randomization(
+                pos= [0.0, 0.0, env_mesh_pos[2]],
+                z_jitter_range= plane_height_jit,
+            )
+        else:
+            ground_pose = np.array([0.0, 0.0, env_mesh_pos[2]], dtype=np.float32)
+        # Load ground plane but make it invisible.
+        self.bullet_client.setAdditionalSearchPath(pybullet_data.getDataPath())
         self.ground_plane_id = self.bullet_client.loadURDF(
             "plane.urdf",
-            basePosition=[0, 0, 0],
+            basePosition=ground_pose,
         )
-
-        # Make the plane invisible but keep collision
+        # Make the plane invisible but keep collision.
         self.bullet_client.changeVisualShape(
             self.ground_plane_id,
             -1,
             rgbaColor=[1, 1, 1, 0],  # alpha = 0
         )
-        # load background, but make it non-collidable
+
+        # Load background / outlier scene as visual-only.
         self.env_mesh = load_models(
             self.bullet_client,
             visual_mesh_file=self.env_mesh_path,
             vhacd_mesh_file=None,
             desired_mass=0.0,
+            position=env_mesh_pos,
+            baseOrientation=env_mesh_orn,
             visual_only=True,
         )
-        
+
         self.pick_up_obj_id = load_models(
             self.bullet_client,
             visual_mesh_file=self.pick_up_obj_path,
             vhacd_mesh_file=self.convex_pick_up_obj_path,
             desired_mass=0.5,
-            position=np.array(obj_pose_base),
-            baseOrientation=self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_base)),
+            position= objPose,
+            baseOrientation= objOrn,
             center_of_mass=np.array(self.com_pick_up_obj),
             lateral_friction=0.6,
         )
@@ -290,6 +345,16 @@ class PickUpSim(object):
                 get_current_arm_joints_fn=self.get_current_arm_joints,
                 quat_slerp_fn=quat_slerp,
                 panda_num_dofs=pandaNumDofs,
+                # Ground-relative distractor injection. The collision plane z can be randomized;
+                # distractors should spawn relative to the actual current ground plane, not world z=0.
+                ground_z=float(ground_pose[2]),
+                spawn_clearance=0.005,
+                # Keep this false by default. Full robot-plan IK rejection is very sensitive to
+                # randomized scene/ground pose and can reject almost every candidate.
+                check_robot_plan=False,
+                check_xy_safety=True,
+                min_visible_fraction=0.55,
+                debug=False,
             )
         else:
             self.distractorDR.clear_distractors()
