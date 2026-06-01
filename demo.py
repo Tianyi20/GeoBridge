@@ -18,16 +18,16 @@ timeStep=1./240.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = PickUpSim(p, offset=[0, 0, 0], seed = 4122623382)
+Sim = PickUpSim(p, offset=[0, 0, 0], seed = 4123852)
 
 Sim.make_scene(env_mesh_path= "./data/background/patched_table/tabletop.obj",
                manipulated_obj_path= "./data/objects/banana/banana.obj",
                initial_grasp_path= "./data/objects/banana/grasp.yaml",
                obj_pose_base = [0.5, 0.0, 0.1],
-               obj_euler_base = [math.pi/2, 0.0, math.pi/2],
+               obj_euler_base = [math.pi/2, 0.0, 2.3*math.pi/2],
                randomize_image_noise= True,
                randomize_lighting= True,
-               randomize_objpose= True,
+               randomize_objpose= False,
                randomize_distractors= True,
                distractor_root= "/mnt/storage/GoogleScannedObjects",
                distractor_num_range= (0, 4),
@@ -50,8 +50,13 @@ try:
         if sim_step % record_every_n_sim_steps == 0:
             _, _, RGB, _, _ = Sim.get_agentview_image()
             cv2.imwrite("temp_rgb.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
+            obs = Sim.collect_observation()
+            print(obs["robot0_gripper_qpos"])
+
         # time.sleep(0.05)
         # print(Sim.is_success())
+
+        #Sim.collect_action()
 
 except KeyboardInterrupt:
     print("Stopped by user")

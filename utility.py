@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from typing import Dict
 import numpy as np
@@ -334,3 +335,44 @@ def compare_rgb(a, b):
     print("mean diff:", diff.mean())
     print("max diff:", diff.max())
     print("same pixels:", np.mean(np.all(diff == 0, axis=-1)) * 100, "%")
+
+def normalize_vector(vec, eps=1e-8):
+    vec = np.asarray(vec, dtype=float)
+    norm = np.linalg.norm(vec)
+    if norm < eps:
+        raise ValueError(f"Cannot normalize near-zero vector: {vec}")
+    return vec / norm
+
+
+def quat_from_rotation_matrix(rot):
+    """Convert a 3x3 rotation matrix to a PyBullet xyzw quaternion."""
+    m = np.asarray(rot, dtype=float).reshape(3, 3)
+    trace = np.trace(m)
+
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (m[2, 1] - m[1, 2]) / s
+        qy = (m[0, 2] - m[2, 0]) / s
+        qz = (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+        qw = (m[2, 1] - m[1, 2]) / s
+        qx = 0.25 * s
+        qy = (m[0, 1] + m[1, 0]) / s
+        qz = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+        qw = (m[0, 2] - m[2, 0]) / s
+        qx = (m[0, 1] + m[1, 0]) / s
+        qy = 0.25 * s
+        qz = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+        qw = (m[1, 0] - m[0, 1]) / s
+        qx = (m[0, 2] + m[2, 0]) / s
+        qy = (m[1, 2] + m[2, 1]) / s
+        qz = 0.25 * s
+
+    quat = np.array([qx, qy, qz, qw], dtype=float)
+    return quat / np.linalg.norm(quat)

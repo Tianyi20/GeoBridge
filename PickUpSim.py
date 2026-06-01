@@ -22,6 +22,8 @@ from pybullet_utility import (
     cvPose2BulletView
 )
 
+from utility import normalize_vector, quat_from_rotation_matrix
+
 useNullSpace = 1
 ikSolver = 0
 pandaEndEffectorIndex = 11
@@ -38,7 +40,7 @@ jointPositions = [
     -1.4272947420449444,
     0.055714113760170644,
     1.5859262946844102,
-    -1.0857437887214538,
+    0.0,
     0.02,
     0.02,
 ]
@@ -64,7 +66,30 @@ class PickUpSim(object):
         self.t = 0.0
         # Set GUI's Sky to white, only influence GUI
         self.bullet_client.configureDebugVisualizer(rgbBackground=[1, 1, 1])
-        self.finger_target = 0.04
+
+        # Gripper command convention for policy / real robot interface:
+        #   1.0 = open, 0.0 = closed.
+        # PyBullet still needs a physical finger width, so the binary state is
+        # converted to width only inside the simulator control layer.
+        self.GRIPPER_CLOSED = 0.0
+        self.GRIPPER_OPEN = 1.0
+        self.gripper_closed_width = 0.0
+        self.gripper_open_width = 0.04
+        self.gripper_state_threshold_width = 0.8 * (
+            self.gripper_open_width + self.gripper_closed_width
+        )
+        self.target_gripper = self.GRIPPER_OPEN
+        self.finger_target = self.gripper_open_width
+
+        # Fixed grasp orientation convention:
+        # local +Z of the end-effector is treated as the positive grasp normal.
+        # It is locked to a world-frame normal, so object yaw randomization
+        # (e.g. banana rotated by 180 deg) will not flip the gripper angle.
+        # Change these two vectors if the real gripper frame uses a different
+        # positive normal / in-plane tangent convention.
+        self.grasp_world_normal = np.array([0.0, 0.0, -1.0], dtype=float)
+        self.grasp_world_tangent = np.array([1.0, 0.0, 0.0], dtype=float)
+
         self.safe_approach = 0.1
         self.safe_grasp_offset = 0.05
         self.arm_force = 200.0
@@ -108,7 +133,7 @@ class PickUpSim(object):
         self.home_ee_pos = np.array(self.home_ee_pos, dtype=float)
         self.home_ee_orn = np.array(self.home_ee_orn, dtype=float)
 
-        ########333#========= pick up状态机 =========###################
+        #########========= pick up状态机 =========###################
         self.states = [
             "home",
             "move_pregrasp",
@@ -117,12 +142,12 @@ class PickUpSim(object):
             "close_gripper",
             "lift_object",
         ]
-        self.state_durations = [0.01, 1.0, 0.15, 0.8, 0.3, 1.0]
+        self.state_durations = [0.01, 3.0, 0.15, 1.5, 0.5, 1.0]
         self.state_idx = 0
         self.state = self.states[self.state_idx]
         self.state_t = 0.0
 
-        # target pose, target gripper
+        # target pose, target gripper state (1=open, 0=closed)
         self.target_pos = None
         self.target_orn = None
         self.target_gripper = None
@@ -313,15 +338,82 @@ class PickUpSim(object):
         print("Warning: Scene did not stabilize within timeout.")
         return False
 
+
+
+    def get_fixed_normal_grasp_orn(self, raw_grasp_orn=None):
+        """Fix only the grasp positive normal direction in world frame.
+
+        The EE local +Z axis is forced to align with self.grasp_world_normal.
+        The in-plane x axis is taken from the original annotated grasp orientation,
+        then canonicalized to avoid 180-degree flips.
+        """
+        z_axis = normalize_vector(self.grasp_world_normal)
+
+        # Use the original grasp orientation to choose the in-plane direction.
+        # This preserves some information from the manually annotated grasp,
+        # instead of fully hard-coding the whole orientation.
+        if raw_grasp_orn is not None:
+            raw_rot = np.array(
+                self.bullet_client.getMatrixFromQuaternion(raw_grasp_orn),
+                dtype=float,
+            ).reshape(3, 3)
+
+            # EE local +X axis from the original grasp orientation.
+            tangent = raw_rot[:, 0]
+        else:
+            tangent = np.asarray(self.grasp_world_tangent, dtype=float)
+
+        # Project tangent onto the plane perpendicular to the fixed normal.
+        tangent = tangent - np.dot(tangent, z_axis) * z_axis
+
+        if np.linalg.norm(tangent) < 1e-8:
+            tangent = np.asarray(self.grasp_world_tangent, dtype=float)
+            tangent = tangent - np.dot(tangent, z_axis) * z_axis
+
+        if np.linalg.norm(tangent) < 1e-8:
+            fallback = np.array([1.0, 0.0, 0.0], dtype=float)
+            if abs(np.dot(fallback, z_axis)) > 0.95:
+                fallback = np.array([0.0, 1.0, 0.0], dtype=float)
+            tangent = fallback - np.dot(fallback, z_axis) * z_axis
+
+        x_axis = normalize_vector(tangent)
+
+        # Canonicalize the x direction.
+        # For a parallel gripper, +x and -x are often physically equivalent,
+        # but they create a 180-degree quaternion/action jump.
+        ref = np.asarray(self.grasp_world_tangent, dtype=float)
+        ref = ref - np.dot(ref, z_axis) * z_axis
+
+        if np.linalg.norm(ref) > 1e-8:
+            ref = normalize_vector(ref)
+            if np.dot(x_axis, ref) < 0.0:
+                x_axis = -x_axis
+
+        y_axis = normalize_vector(np.cross(z_axis, x_axis))
+        x_axis = normalize_vector(np.cross(y_axis, z_axis))
+
+        # Columns are EE local x/y/z axes expressed in world frame.
+        rot = np.column_stack([x_axis, y_axis, z_axis])
+        return quat_from_rotation_matrix(rot)
+
+
     def get_initial_guess_grasp(self):
-        mesh_world_pos, mesh_world_orn = get_true_PositionAndOrientation(self.bullet_client,
-                                                                         self.pick_up_obj_id)
-        grasp_pose, grasp_orn = self.bullet_client.multiplyTransforms(
+        mesh_world_pos, mesh_world_orn = get_true_PositionAndOrientation(
+            self.bullet_client,
+            self.pick_up_obj_id,
+        )
+
+        grasp_pose, raw_grasp_orn = self.bullet_client.multiplyTransforms(
             mesh_world_pos,
             mesh_world_orn,
-            self.initial_grasp_guess["t"], # initial grasp is defined manually
+            self.initial_grasp_guess["t"],
             self.initial_grasp_guess["quat"],
         )
+
+        # Position follows the object-frame annotated grasp point.
+        # Orientation fixes only the grasp normal, not the entire orientation.
+        grasp_orn = self.get_fixed_normal_grasp_orn(raw_grasp_orn)
+
         return np.array(grasp_pose, dtype=float), np.array(grasp_orn, dtype=float)
     
     def get_ee_pose(self):
@@ -331,7 +423,18 @@ class PickUpSim(object):
         return np.array(link_state[4], dtype=float), np.array(link_state[5], dtype=float)
     
 
-    def set_gripper(self, opening):
+    def gripper_state_to_width(self, state):
+        """Map binary gripper state to simulated Panda finger width."""
+        state = float(state)
+        return self.gripper_open_width if state >= 0.5 else self.gripper_closed_width
+
+    def gripper_width_to_state(self, width):
+        """Map measured simulated finger width back to binary gripper state."""
+        width = float(width)
+        return self.GRIPPER_OPEN if width >= self.gripper_state_threshold_width else self.GRIPPER_CLOSED
+
+    def set_gripper_width(self, opening):
+        """Low-level simulator command. Policy/action should not call this directly."""
         self.finger_target = float(opening)
         for i in [9, 10]:
             self.bullet_client.setJointMotorControl2(
@@ -341,6 +444,23 @@ class PickUpSim(object):
                 targetPosition=self.finger_target,
                 force=self.gripper_force,
             )
+
+    def set_gripper_state(self, state):
+        """High-level binary gripper command: 1=open, 0=closed."""
+        self.target_gripper = self.GRIPPER_OPEN if float(state) >= 0.5 else self.GRIPPER_CLOSED
+        self.set_gripper_width(self.gripper_state_to_width(self.target_gripper))
+
+    def set_gripper(self, command):
+        """Compatibility wrapper.
+
+        Accepts the new binary command 0/1 and the old width command such as
+        0.04. New policy/action code should call set_gripper_state() directly.
+        """
+        command = float(command)
+        if command in (self.GRIPPER_CLOSED, self.GRIPPER_OPEN):
+            self.set_gripper_state(command)
+        else:
+            self.set_gripper_width(command)
 
     def solve_ik_and_apply(self, target_pos, target_orn):
         current_q = self.get_current_arm_joints()
@@ -390,8 +510,8 @@ class PickUpSim(object):
         if state == "home":
             self.motion_target_pos = self.home_ee_pos.copy()
             self.motion_target_orn = self.home_ee_orn.copy()
-            self.target_gripper = 0.04
-            self.set_gripper(self.target_gripper)
+            self.target_gripper = self.GRIPPER_OPEN
+            self.set_gripper_state(self.target_gripper)
 
         elif state == "move_pregrasp":
             # 简单 pick-up：从物体上方接近，不再根据 mug tree / rack 计算侧向 approach。
@@ -404,7 +524,7 @@ class PickUpSim(object):
             self.motion_target_orn = grasp_orn.copy()
 
         elif state == "open_gripper":
-            self.target_gripper = 0.04
+            self.target_gripper = self.GRIPPER_OPEN
 
         elif state == "move_grasp":
             grasp_pos, grasp_orn = self.get_initial_guess_grasp()
@@ -415,7 +535,7 @@ class PickUpSim(object):
             self.motion_target_orn = grasp_orn.copy()
 
         elif state == "close_gripper":
-            self.target_gripper = 0.0
+            self.target_gripper = self.GRIPPER_CLOSED
 
         elif state == "lift_object":
             # 闭爪后直接沿 world z 方向抬起物体，完成简单 pick-up。
@@ -441,7 +561,7 @@ class PickUpSim(object):
         s = min(self.state_t / duration, 1.0)
 
         if self.state in ["open_gripper", "close_gripper"]:
-            self.set_gripper(self.target_gripper)
+            self.set_gripper_state(self.target_gripper)
 
             ee_pos, ee_orn = self.get_ee_pose()
             self.target_pos = ee_pos.copy()
@@ -465,14 +585,17 @@ class PickUpSim(object):
             "robot0_eye_in_hand_image": (H, W, 3),
             "robot0_eef_pos": (3,),             # 末端位置 xyz
             "robot0_eef_quat": (4,),            # 末端姿态 quaternion
-            "robot0_gripper_qpos": (2,),        # `手爪开合（两个指）
+            "robot0_gripper_qpos": (1,),        # 二值手爪状态：1=open, 0=closed
         }
         """
         eef_pos, eef_quat = self.get_ee_pose()
 
-        gripper_qpos = np.array([
+        finger_widths = np.array([
             self.bullet_client.getJointState(self.panda, 9)[0],
             self.bullet_client.getJointState(self.panda, 10)[0],
+        ], dtype=np.float32)
+        gripper_state = np.array([
+            self.gripper_width_to_state(np.mean(finger_widths))
         ], dtype=np.float32)
 
         # direct get 224 by approximate intrinsic
@@ -491,13 +614,13 @@ class PickUpSim(object):
             # pickup only use agent view
             "robot0_eef_pos": np.asarray(eef_pos, dtype=np.float32),       # (3,)
             "robot0_eef_quat": np.asarray(eef_quat, dtype=np.float32),     # (4,)
-            "robot0_gripper_qpos": gripper_qpos,                           # (2,)
+            "robot0_gripper_qpos": gripper_state,                          # (1,), 1=open, 0=closed
         }
         return obs
     
   
     def collect_action(self):      
-        # 1维 gripper command，开=0.04，关=0.0
+        # 1维 binary gripper command：1=open, 0=closed
         gripper = np.array([self.target_gripper], dtype=np.float32)
 
         action = np.concatenate([self.target_pos, self.target_orn, gripper], axis=0).astype(np.float32)
