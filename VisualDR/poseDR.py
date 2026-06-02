@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-
+from icecream import ic
 class PoseDR:
     """SE3 Pose domain randomization"""
 
@@ -39,6 +39,7 @@ class PoseDR:
         x_euler_jitter_range=None,
         y_euler_jitter_range=None,
         z_euler_jitter_range=None,
+        get_matrix=False,
     ):
         if pos is None or orn is None:
             raise ValueError("Base pos an orn are not provided")
@@ -64,6 +65,13 @@ class PoseDR:
         delta_R = R.from_euler("xyz", euler_jitter)
 
         # local-frame rotation perturbation
-        ornDR = (base_R * delta_R).as_quat()
+        rotDR = delta_R * base_R 
+        ornDR = rotDR.as_quat()
+        
+        if get_matrix:
+            matDR = np.eye(4, dtype=np.float32)
+            matDR[:3, :3] = rotDR.as_matrix().astype(np.float32)
+            matDR[:3, 3] = posDR
+            return matDR
 
         return posDR, ornDR

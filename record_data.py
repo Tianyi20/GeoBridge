@@ -9,17 +9,19 @@ from episode_writer import EpisodeWriter
 import json
 from pathlib import Path
 from icecream import ic
-from tqdm import tqdm    
+from tqdm import tqdm
+from datetime import datetime
+
 def collect_one_episode(sim :PickUpSim, 
                         episode_dir,
                         meta_seed,
-                        fps=20, 
-                        max_steps=1000, 
-                        record_every_n_sim_steps=6,
+                        fps=10, 
+                        max_steps=2000, 
+                        record_every_n_sim_steps=12,
                         ):
     """
-    PyBullet control_dt = 1/240
-    如果每12个sim step录一帧 -> 20 FPS
+    PyBullet control_dt = 1/120
+    如果每12个sim step录一帧 -> 10 FPS
     """
 
     ## init episode writer
@@ -43,9 +45,9 @@ def collect_one_episode(sim :PickUpSim,
 
         if sim_step % record_every_n_sim_steps == 0:
             action = sim.collect_action()
-            # ic(sim_step, timestamp, record_idx, 
-            #    obs['robot0_eef_pos'], obs['robot0_eef_quat'], 
-            #    target_pos, target_orn)
+            ic(sim_step, timestamp, record_idx, 
+               obs['robot0_eef_pos'], obs['robot0_eef_quat'], obs['robot0_gripper_qpos']
+               )
             timestamp = record_idx / float(fps)
             writer.add_step(obs, action, timestamp)
             record_idx += 1
@@ -65,8 +67,10 @@ if __name__ == "__main__":
     # seed env randomization
     _seed = 43
     NUM_EPISODES = 5
-    BASE_DIR = Path("./DP_data/pickup/episodes")
-
+    run_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    BASE_DIR = Path("/mnt/storage/DP_data/pickup/")/ run_time / "episodes"
+    
+    ic(BASE_DIR)
     for ep in tqdm(range(NUM_EPISODES)):
         print(f"\n=== Collecting episode {ep:06d} ===")
         _seed += 1
@@ -80,25 +84,36 @@ if __name__ == "__main__":
 
         Sim = PickUpSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = _seed)
 
-        Sim.make_scene(env_mesh_path= "./data/background/patched_table/tabletop.obj",
-                    manipulated_obj_path= "./data/objects/banana/banana.obj",
-                    initial_grasp_path= "./data/objects/banana/grasp.yaml",
-                    # x work range : 0.7, 0.4
-                    obj_pose_base = [0.55, 0.0, 0.1],
-                    obj_euler_base = [math.pi/2, 0.0, math.pi/2],
-                    randomize_image_noise= True,
-                    randomize_lighting= True,
-                    randomize_objpose= True,
-                    x_jitter_range= 0.15,
-                    y_jitter_range= 0.2,
-                    z_axis_rotation_range = np.pi,
-                    randomize_distractors= True,
-                    distractor_root= "/mnt/storage/GoogleScannedObjects",
-                    distractor_num_range= (0, 4),
-                    distractor_target_size_range= (0.06, 0.3),
-                    distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
-                    # at least 10 pixel of the target object
-                    distractor_min_target_mask_pixels= 10,)
+        Sim.make_scene(
+            env_mesh_path= "./data/background/patched_table/tabletop.obj",
+            manipulated_obj_path= "./data/objects/banana/banana.obj",
+            initial_grasp_path= "./data/objects/banana/grasp.yaml",
+            obj_pose_base = [0.55, 0.0, 0.1],
+            obj_euler_base = [math.pi/2, 0.0, math.pi/2],
+            randomize_lighting= True,
+            # outlier scene         
+            randomize_outlscene  = True,
+            outlscene_xyz_jit    = 0.015,
+            outlscene_eul_jit    = 0.001,
+            # plane height randomization
+            randomize_plane_height = True,
+            plane_height_jit = 0.002,
+            randomize_objpose  = True,
+            obj_x_jit    = 0.15,
+            obj_y_jit    = 0.2,
+            obj_z_eul_jit = np.pi,
+            randomize_campose = True,
+            cam_xyz_jit  = 0.004,
+            cam_eul_jit  = 0.002,
+            randomize_image_noise= True,
+            randomize_distractors= True,
+            distractor_root= "/mnt/storage/GoogleScannedObjects",
+            distractor_num_range= (0, 4),
+            distractor_target_size_range= (0.06, 0.3),
+            distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
+            # at least 10 pixel of the target object
+            distractor_min_target_mask_pixels= 10,
+            )
         Sim.enable_high_quality_rendering()
 
         collect_one_episode(

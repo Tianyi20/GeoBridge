@@ -11,33 +11,36 @@ import math
 import time
 import numpy as np
 import cv2
-p.connect(p.GUI)
+p.connect(p.DIRECT)
 # p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP,1)
 p.setAdditionalSearchPath(pd.getDataPath())
-timeStep=1./240.
+timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = PickUpSim(p, offset=[0, 0, 0], seed = 642252)
+Sim = PickUpSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 6486)
 
 Sim.make_scene(
     env_mesh_path= "./data/background/patched_table/tabletop.obj",
     manipulated_obj_path= "./data/objects/banana/banana.obj",
     initial_grasp_path= "./data/objects/banana/grasp.yaml",
-    obj_pose_base = [0.5, 0.0, 0.1],
+    obj_pose_base = [0.55, 0.0, 0.1],
     obj_euler_base = [math.pi/2, 0.0, math.pi/2],
     randomize_lighting= True,
     # outlier scene         
     randomize_outlscene  = True,
     outlscene_xyz_jit    = 0.015,
-    outlscene_eul_jit    = 0.00,
+    outlscene_eul_jit    = 0.001,
     # plane height randomization
     randomize_plane_height = True,
     plane_height_jit = 0.002,
     randomize_objpose  = True,
-    obj_x_jit    = 0.2,
+    obj_x_jit    = 0.15,
     obj_y_jit    = 0.2,
     obj_z_eul_jit = np.pi,
+    randomize_campose = True,
+    cam_xyz_jit  = 0.004,
+    cam_eul_jit  = 0.002,
     randomize_image_noise= True,
     randomize_distractors= True,
     distractor_root= "/mnt/storage/GoogleScannedObjects",
@@ -53,7 +56,7 @@ Sim.enable_high_quality_rendering()
 sim_step = 0
 timestamp = 0.0
 record_idx = 0
-record_every_n_sim_steps = 24
+record_every_n_sim_steps = 12
 try:
     while (not Sim.done):
         p.stepSimulation()

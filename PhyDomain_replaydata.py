@@ -119,8 +119,8 @@ def collect_dataset_from_phydomain(data_root, out_path, only_success=True, use_e
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/storage/DP_data/pickup/episodes"
-    out_path = "/mnt/storage/DP_data/pickup/pickup.zarr"
+    data_root = "/mnt/storage/DP_data/pickup/20260602_151846/episodes"
+    out_path = "/mnt/storage/DP_data/pickup/20260602_151846/pickup.zarr"
 
     use_eye_in_hand=False
 
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         data_root,
         out_path,
         only_success=True,
-        use_eye_in_hand=False,   # 没有 eye_in_hand.mp4 就设 False
+        use_eye_in_hand=use_eye_in_hand,   # 没有 eye_in_hand.mp4 就设 False
     )
     print("done")
 

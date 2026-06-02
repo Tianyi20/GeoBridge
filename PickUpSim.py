@@ -24,6 +24,9 @@ from utility import (
     quat_from_rotation_matrix
     ) 
 
+from icecream import ic
+from scipy.spatial.transform import Rotation as R
+
 useNullSpace = 1
 ikSolver = 0
 pandaEndEffectorIndex = 11
@@ -41,8 +44,8 @@ jointPositions = [
     0.055714113760170644,
     1.5859262946844102,
     0.0,
-    0.02,
-    0.02,
+    0.04,
+    0.04,
 ]
 rp = jointPositions
 
@@ -69,6 +72,23 @@ class PickUpSim(object):
         self.t = 0.0
         # Set GUI's Sky to white, only influence GUI
         self.bullet_client.configureDebugVisualizer(rgbBackground=[1, 1, 1])
+
+        # Based Agent-view camera calibration / pose state.
+        self.agentview_width = 960
+        self.agentview_height = 540
+        self.agentview_near = 0.02
+        self.agentview_far = 2.0
+        self.agentview_base_extrinsic_cam = np.array([
+            [-0.808,   0.3283, -0.4892,  0.8758],
+            [ 0.5837,  0.3327, -0.7407,  0.6006],
+            [-0.0804, -0.884,  -0.4604,  0.4729],
+            [ 0.0,     0.0,     0.0,     1.0   ],
+        ], dtype=np.float32)
+        self.agentview_base_intrinsic = np.array([
+            [691.7508,   0.0,     486.7637],
+            [  0.0,    692.2195, 273.4784],
+            [  0.0,      0.0,       1.0   ],
+        ], dtype=np.float32)
 
         # Gripper command convention for policy / real robot interface:
         #   1.0 = open, 0.0 = closed.
@@ -145,7 +165,7 @@ class PickUpSim(object):
             "close_gripper",
             "lift_object",
         ]
-        self.state_durations = [0.01, 3.0, 0.15, 1.5, 0.5, 1.0]
+        self.state_durations = [0.01, 5.0, 0.25, 2.0, 0.5, 2.0]
         self.state_idx = 0
         self.state = self.states[self.state_idx]
         self.state_t = 0.0
@@ -187,8 +207,8 @@ class PickUpSim(object):
                    obj_y_jit    = 0.2,
                    obj_z_eul_jit = np.pi,
                    randomize_campose = True,
-                   cam_xyz_jit  = 0.01,
-                   cam_eul_jit  = 0.01,
+                   cam_xyz_jit  = 0.004,
+                   cam_eul_jit  = 0.002,
                    randomize_image_noise = True,
                    randomize_distractors = True,
                    distractor_root = "/mnt/storage/GoogleScannedObjects",
@@ -207,7 +227,6 @@ class PickUpSim(object):
         # 4. number of lights in the scene
         # 5. position, orientation, specular characteristics of the lights
         # 6. types and amount of random noise added to the images 
-
         # TODO: advanced visual randomization:
         # 7. outlier scene pose randomization
         # 8. plane height
@@ -295,6 +314,22 @@ class PickUpSim(object):
             rgbaColor=[1, 1, 1, 0],  # alpha = 0
         )
 
+        # camera pose randomization
+        if randomize_campose:
+            self.extrinsic_cam = self.camposeDR.sample_SE3_randomization(
+                pos=self.agentview_base_extrinsic_cam[:3, 3],
+                orn=quat_from_rotation_matrix(self.agentview_base_extrinsic_cam[:3, :3]),
+                x_jitter_range=cam_xyz_jit,
+                y_jitter_range=cam_xyz_jit,
+                z_jitter_range=cam_xyz_jit,
+                x_euler_jitter_range=cam_eul_jit,
+                y_euler_jitter_range=cam_eul_jit,
+                z_euler_jitter_range=cam_eul_jit,
+                get_matrix=True,
+            )
+        else:
+            self.extrinsic_cam = self.agentview_base_extrinsic_cam.copy()
+
         # Load background / outlier scene as visual-only.
         self.env_mesh = load_models(
             self.bullet_client,
@@ -321,7 +356,6 @@ class PickUpSim(object):
         # Let the manipulated object settle first. The resulting AABB/grasp pose is
         # used to reject distractor placements around the target and robot path.
         self.waite_scene_stable()
-
 
         """############# Distractor Domain randomization ##############"""
         if randomize_distractors:
@@ -361,7 +395,7 @@ class PickUpSim(object):
 
         # Step a few frames after static distractor creation so broad-phase contacts
         # are updated before collecting observations.
-        for _ in range(20):
+        for _ in range(5):
             self.bullet_client.stepSimulation()
 
         obj_pos, obj_orn = get_true_PositionAndOrientation(
@@ -604,7 +638,7 @@ class PickUpSim(object):
 
         elif state == "lift_object":
             # 闭爪后直接沿 world z 方向抬起物体，完成简单 pick-up。
-            self.motion_target_pos = ee_pos.copy() + np.array([0.0, 0.0, 0.2], dtype=float)
+            self.motion_target_pos = ee_pos.copy() + np.array([0.0, 0.0, 0.15], dtype=float)
             self.motion_target_orn = ee_orn.copy()
 
     def switch_to_next_state(self):
@@ -738,22 +772,13 @@ class PickUpSim(object):
         return cropped_rgb
 
     def get_agentview_image(self):
-        W = 960
-        H = 540
-        near = 0.02
-        far  = 2.0
-        extrinsic_cam = np.array([[-0.808, 0.3283, -0.4892,  0.8758,],
-                                [ 0.5837,  0.3327, -0.7407,  0.6006,],
-                                [-0.0804, -0.884,  -0.4604,  0.4729,],
-                                [ 0.,      0.,      0.,      1.,    ],], dtype=np.float32)
+        projectionMatrix = cvK2BulletP(self.agentview_base_intrinsic, 
+                                       self.agentview_width, self.agentview_height, 
+                                       self.agentview_near, self.agentview_far)
         
-        intrinsic = np.array([[691.7508,    0.,      486.7637,],
-                            [  0.,    692.2195,   273.4784,],
-                            [  0.,      0.,       1.,  ],], dtype=np.float32)
-        projectionMatrix = cvK2BulletP(intrinsic, W, H, near, far)
-        viewMatrix = cvPose2BulletView(extrinsic_cam)
+        viewMatrix = cvPose2BulletView(self.extrinsic_cam)
 
-        return self.render_camera(W, H, viewMatrix, projectionMatrix)
+        return self.render_camera(self.agentview_width, self.agentview_height, viewMatrix, projectionMatrix)
 
     def direct_get_agent_view(self, out_size=224):
         """
@@ -766,27 +791,17 @@ class PickUpSim(object):
         Because your resize_rgb directly stretches 960x540 to 224x224,
         we scale fx, cx by out_size / 960 and fy, cy by out_size / 540.
         """
-        W0 = 960
-        H0 = 540
+        W0 = self.agentview_width
+        H0 = self.agentview_height
 
         W = out_size
         H = out_size
 
-        near = 0.02
-        far = 2.0
+        near = self.agentview_near
+        far = self.agentview_far
 
-        extrinsic_cam = np.array([
-            [-0.808,   0.3283, -0.4892,  0.8758],
-            [ 0.5837,  0.3327, -0.7407,  0.6006],
-            [-0.0804, -0.884,  -0.4604,  0.4729],
-            [ 0.0,     0.0,     0.0,     1.0   ],
-        ], dtype=np.float32)
-
-        intrinsic_960x540 = np.array([
-            [691.7508,   0.0,     486.7637],
-            [  0.0,    692.2195, 273.4784],
-            [  0.0,      0.0,       1.0   ],
-        ], dtype=np.float32)
+        extrinsic_cam = self.extrinsic_cam.copy()
+        intrinsic_960x540 = self.agentview_base_intrinsic.copy()
 
         sx = W / W0
         sy = H / H0
