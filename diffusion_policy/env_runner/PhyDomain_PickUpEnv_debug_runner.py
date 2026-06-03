@@ -22,8 +22,11 @@ class PickUpEnvDebugRunner(BaseImageRunner):
                  randomize_lighting = True,
                  randomize_objpose = True,
                  randomize_distractors = True,
+                 randomize_outlscene = True,
+                 randomize_plane_height = True,
+                 randomize_campose = True,
                  n_obs_steps=2,
-                 n_action_steps=2,
+                 n_action_steps=8,
                  fps=10,
                  crf=22,
                  video_file_path = None, # None to disable video recording
@@ -44,6 +47,9 @@ class PickUpEnvDebugRunner(BaseImageRunner):
                         randomize_lighting=randomize_lighting,
                         randomize_objpose=randomize_objpose,
                         randomize_distractors=randomize_distractors,
+                        randomize_outlscene = randomize_outlscene,
+                        randomize_plane_height = randomize_plane_height,
+                        randomize_campose = randomize_campose,
                         ),
                     video_recoder=VideoRecorder.create_h264(
                         fps=fps,

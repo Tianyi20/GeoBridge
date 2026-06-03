@@ -45,9 +45,9 @@ def collect_one_episode(sim :PickUpSim,
 
         if sim_step % record_every_n_sim_steps == 0:
             action = sim.collect_action()
-            ic(sim_step, timestamp, record_idx, 
-               obs['robot0_eef_pos'], obs['robot0_eef_quat'], obs['robot0_gripper_qpos']
-               )
+            # ic(sim_step, timestamp, record_idx, 
+            #    obs['robot0_eef_pos'], obs['robot0_eef_quat'], obs['robot0_gripper_qpos']
+            #    )
             timestamp = record_idx / float(fps)
             writer.add_step(obs, action, timestamp)
             record_idx += 1
@@ -94,7 +94,7 @@ if __name__ == "__main__":
             # outlier scene         
             randomize_outlscene  = True,
             outlscene_xyz_jit    = 0.015,
-            outlscene_eul_jit    = 0.001,
+            outlscene_eul_jit    = 0.002,
             # plane height randomization
             randomize_plane_height = True,
             plane_height_jit = 0.002,

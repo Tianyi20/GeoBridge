@@ -23,7 +23,7 @@ class PickUpEnvRunner(BaseImageRunner):
     def __init__(self, output_dir,            
                  max_steps=2000,
                  n_obs_steps=2,
-                 n_action_steps=2,
+                 n_action_steps=8,
                  # How many envs as env runners
                  train_start_seed=43,
                  test_start_seed=20043,
@@ -237,8 +237,7 @@ class PickUpEnvRunner(BaseImageRunner):
             all_rewards[this_global_slice] = env.call('get_attr', 'reward')[this_local_slice]
 
         # clear internal video buffers
-        _ = env.reset()
-
+        # _ = env.reset()
         # logging
         max_rewards = collections.defaultdict(list)
         log_data = {}

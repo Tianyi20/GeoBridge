@@ -119,12 +119,11 @@ def collect_dataset_from_phydomain(data_root, out_path, only_success=True, use_e
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/storage/DP_data/pickup/20260602_151846/episodes"
-    out_path = "/mnt/storage/DP_data/pickup/20260602_151846/pickup.zarr"
+    data_root = "/mnt/storage/DP_data/pickup/20260602_170802/episodes"
+    out_path = "./data/DP_data/6_2_advanDR/pickup.zarr"
 
     use_eye_in_hand=False
 
-    
     buffer = collect_dataset_from_phydomain(
         data_root,
         out_path,

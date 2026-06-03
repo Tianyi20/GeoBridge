@@ -104,11 +104,13 @@ class PhyAgentImageWorkspace(BaseWorkspace):
                 model=self.ema_model)
 
         # configure env
-        env_runner: BaseImageRunner
-        env_runner = hydra.utils.instantiate(
-            cfg.task.env_runner,
-            output_dir=self.output_dir)
-        assert isinstance(env_runner, BaseImageRunner)
+        # Do not reuse env runners that create at beginning
+        # Move env runner creation before every rollout
+        # env_runner: BaseImageRunner
+        # env_runner = hydra.utils.instantiate(
+        #     cfg.task.env_runner,
+        #     output_dir=self.output_dir)
+        # assert isinstance(env_runner, BaseImageRunner)
 
         # configure logging
         wandb_run = wandb.init(
@@ -215,10 +217,24 @@ class PhyAgentImageWorkspace(BaseWorkspace):
                 policy.eval()
 
                 # run rollout
+                # if (self.epoch % cfg.training.rollout_every) == 0:
+                #     runner_log = env_runner.run(policy)
+                #     # log all
+                #     step_log.update(runner_log)
                 if (self.epoch % cfg.training.rollout_every) == 0:
-                    runner_log = env_runner.run(policy)
-                    # log all
-                    step_log.update(runner_log)
+                    env_runner = hydra.utils.instantiate(
+                        cfg.task.env_runner,
+                        output_dir=self.output_dir
+                    )
+                    assert isinstance(env_runner, BaseImageRunner)
+
+                    try:
+                        runner_log = env_runner.run(policy)
+                        step_log.update(runner_log)
+                    finally:
+                        env_runner.env.close()
+                        del env_runner
+
 
                 # run validation
                 if (self.epoch % cfg.training.val_every) == 0:
@@ -293,7 +309,7 @@ class PhyAgentImageWorkspace(BaseWorkspace):
     config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")), 
     config_name=pathlib.Path(__file__).stem)
 def main(cfg):
-    workspace = PhyAgentViewWorkspace(cfg)
+    workspace = PhyAgentImageWorkspace(cfg)
     workspace.run()
 
 if __name__ == "__main__":

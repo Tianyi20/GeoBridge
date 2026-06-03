@@ -95,7 +95,7 @@ class PhyAgentImageDataset(BaseImageDataset):
                 # 'robot0_eye_in_hand_image' : robot0_eye_in_hand_image,
                 'robot0_eef_pos': sample['robot0_eef_pos'].astype(np.float32), # T, 3
                 'robot0_eef_quat': sample['robot0_eef_quat'].astype(np.float32), # T, 4
-                'robot0_gripper_qpos': sample['robot0_gripper_qpos'].astype(np.float32), # T, 2
+                'robot0_gripper_qpos': sample['robot0_gripper_qpos'].astype(np.float32), # T, 1
             },
             'action': sample['action'].astype(np.float32) 
         }

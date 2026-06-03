@@ -1,40 +1,39 @@
 """
-Multiprocessing data collector for PickUpSim.
+Multiprocessing data collector for the updated PickUpSim.
 
-Usage examples:
-  python record_data_mp.py --num-episodes 100 --num-processes 8
-  python record_data_mp_restart.py --num-episodes 3000 --num-processes 24 --base-dir /mnt/storage/DP_data/pickup/episodes --base-seed 43 --restart-every 15
+Example:
+  python record_data_mp_restart_updated.py --num-episodes 3000 --num-processes 24 --restart-every 2
 
 Design:
-  - Parent process owns only task scheduling and progress reporting.
-  - Each worker process owns exactly one independent PyBullet DIRECT client.
-  - Each episode is collected in a fresh resetSimulation() world.
+  - Parent process only schedules tasks and reports progress.
+  - Each worker owns one independent PyBullet client.
+  - Each episode starts from resetSimulation().
   - Episode ids and seeds are deterministic: seed = base_seed + episode_id + 1.
 """
 
 from __future__ import annotations
-import sys
+
 import argparse
 import math
+import multiprocessing as mp
 import os
 import shutil
+import sys
 import traceback
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Keep numeric / BLAS libraries from oversubscribing every worker process.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
-import multiprocessing as mp
-from multiprocessing.connection import Connection
-
 import numpy as np
 import pybullet as pb
 import pybullet_data as pd
+from multiprocessing.connection import Connection
 from pybullet_utils import bullet_client
 from tqdm import tqdm
 
@@ -54,28 +53,40 @@ class CollectorConfig:
     base_seed: int
     base_dir: Path
     time_step: float = 1.0 / 120.0
-    fps: int = 20
-    max_steps: int = 1000
-    record_every_n_sim_steps: int = 6
+    fps: int = 10
+    max_steps: int = 2000
+    record_every_n_sim_steps: int = 12
     use_gui: bool = False
     overwrite: bool = False
     restart_every: int = 50
 
 
+def default_base_dir() -> Path:
+    run_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path("/mnt/storage/DP_data/pickup") / run_time / "episodes"
+
+
 def build_scene_kwargs() -> Dict[str, Any]:
-    """Scene settings copied from the original single-process record_data.py."""
     return {
         "env_mesh_path": "./data/background/patched_table/tabletop.obj",
         "manipulated_obj_path": "./data/objects/banana/banana.obj",
         "initial_grasp_path": "./data/objects/banana/grasp.yaml",
         "obj_pose_base": [0.55, 0.0, 0.1],
         "obj_euler_base": [math.pi / 2, 0.0, math.pi / 2],
-        "randomize_image_noise": True,
         "randomize_lighting": True,
+        "randomize_outlscene": True,
+        "outlscene_xyz_jit": 0.015,
+        "outlscene_eul_jit": 0.002,
+        "randomize_plane_height": True,
+        "plane_height_jit": 0.002,
         "randomize_objpose": True,
-        "x_jitter_range": 0.15,
-        "y_jitter_range": 0.2,
-        "z_axis_rotation_range": np.pi,
+        "obj_x_jit": 0.15,
+        "obj_y_jit": 0.2,
+        "obj_z_eul_jit": np.pi,
+        "randomize_campose": True,
+        "cam_xyz_jit": 0.004,
+        "cam_eul_jit": 0.002,
+        "randomize_image_noise": True,
         "randomize_distractors": True,
         "distractor_root": "/mnt/storage/GoogleScannedObjects",
         "distractor_num_range": (0, 4),
@@ -86,7 +97,6 @@ def build_scene_kwargs() -> Dict[str, Any]:
 
 
 def setup_world(client: bullet_client.BulletClient, time_step: float) -> None:
-    """Apply per-world PyBullet settings after connect or resetSimulation."""
     client.setAdditionalSearchPath(pd.getDataPath())
     client.setTimeStep(time_step)
     client.setGravity(0, 0, -9.8)
@@ -94,19 +104,14 @@ def setup_world(client: bullet_client.BulletClient, time_step: float) -> None:
 
 
 def collect_one_episode(
+    client: bullet_client.BulletClient,
     sim: PickUpSim,
     episode_dir: Path,
     meta_seed: int,
-    fps: int = 20,
-    max_steps: int = 1000,
-    record_every_n_sim_steps: int = 6,
+    fps: int,
+    max_steps: int,
+    record_every_n_sim_steps: int,
 ) -> bool:
-    """
-    Collect one episode with the same observation/action order as record_data.py.
-
-    Important multiprocessing change:
-      use sim.bullet_client.stepSimulation(), not global pybullet.stepSimulation().
-    """
     writer = EpisodeWriter(
         episode_dir,
         fps=fps,
@@ -120,27 +125,25 @@ def collect_one_episode(
     record_idx = 0
 
     try:
-        while (not sim.done) and sim_step < max_steps:
-            if sim_step % record_every_n_sim_steps == 0:
+        while not sim.done and sim_step < max_steps:
+            should_record = sim_step % record_every_n_sim_steps == 0
+            if should_record:
                 obs = sim.collect_observation(direct=False)
 
-            # Compute and apply this control step.
             sim.step()
 
-            if sim_step % record_every_n_sim_steps == 0:
+            if should_record:
                 action = sim.collect_action()
-                timestamp = record_idx / float(fps)
-                writer.add_step(obs, action, timestamp)
+                writer.add_step(obs, action, record_idx / float(fps))
                 record_idx += 1
 
-            sim.bullet_client.stepSimulation()
+            client.stepSimulation()
             sim_step += 1
 
-        success = sim.is_success()
+        success = bool(sim.is_success())
         writer.close(success=success)
-        return bool(success)
+        return success
     except Exception:
-        # Try to close cleanly so partial metadata is not left open.
         try:
             writer.close(success=False)
         except Exception:
@@ -149,10 +152,6 @@ def collect_one_episode(
 
 
 def prepare_episode_dir(episode_dir: Path, overwrite: bool) -> Tuple[bool, str]:
-    """
-    Returns (should_collect, reason).
-    Existing directories are skipped unless --overwrite is set.
-    """
     if episode_dir.exists():
         if not overwrite:
             return False, "exists"
@@ -181,18 +180,15 @@ def collect_episode_in_worker(
             "success": None,
         }
 
-    # Reset world per episode to avoid object/contact/state leakage.
     client.resetSimulation()
     setup_world(client, cfg.time_step)
 
-    # Disable GUI rendering while loading, matching the batchsim pattern.
     try:
         client.configureDebugVisualizer(client.COV_ENABLE_RENDERING, 0)
     except Exception:
         pass
 
     np.random.seed(seed)
-
     sim = PickUpSim(client, offset=[0, 0, 0], control_dt=cfg.time_step, seed=seed)
     sim.make_scene(**build_scene_kwargs())
     sim.enable_high_quality_rendering()
@@ -203,6 +199,7 @@ def collect_episode_in_worker(
         pass
 
     success = collect_one_episode(
+        client=client,
         sim=sim,
         episode_dir=episode_dir,
         meta_seed=seed,
@@ -220,15 +217,11 @@ def collect_episode_in_worker(
     }
 
 
-def collector_worker(rank: int, num_processes: int, child_pipe: Connection, cfg: CollectorConfig) -> None:
-    """Pipe-driven worker, adapted from PyBullet's batchsim3_grasp.py pattern."""
-
+def collector_worker(rank: int, child_pipe: Connection, cfg: CollectorConfig) -> None:
     log_dir = cfg.base_dir.parent / "worker_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    log_path = log_dir / f"worker_{rank}.log"
-    log_f = open(log_path, "a", buffering=1)
-
+    log_f = open(log_dir / f"worker_{rank}.log", "a", buffering=1)
     sys.stdout = log_f
     sys.stderr = log_f
 
@@ -236,6 +229,7 @@ def collector_worker(rank: int, num_processes: int, child_pipe: Connection, cfg:
 
     client: Optional[bullet_client.BulletClient] = None
     episodes_since_restart = 0
+
     while True:
         try:
             message, payload = child_pipe.recv()
@@ -244,8 +238,8 @@ def collector_worker(rank: int, num_processes: int, child_pipe: Connection, cfg:
 
         if message == _RESET:
             try:
-                connection_mode = pb.GUI if cfg.use_gui and rank == 0 else pb.DIRECT
-                client = bullet_client.BulletClient(connection_mode=connection_mode)
+                mode = pb.GUI if cfg.use_gui and rank == 0 else pb.DIRECT
+                client = bullet_client.BulletClient(connection_mode=mode)
                 setup_world(client, cfg.time_step)
                 episodes_since_restart = 0
                 child_pipe.send({"rank": rank, "status": "reset_ok"})
@@ -264,7 +258,6 @@ def collector_worker(rank: int, num_processes: int, child_pipe: Connection, cfg:
             try:
                 result = collect_episode_in_worker(rank, client, cfg, episode_id)
             except Exception:
-                # Reset after failure so the next task starts from a clean physics world.
                 try:
                     client.resetSimulation()
                     setup_world(client, cfg.time_step)
@@ -279,16 +272,11 @@ def collector_worker(rank: int, num_processes: int, child_pipe: Connection, cfg:
                     "traceback": traceback.format_exc(),
                 }
 
-            # Skipped episodes do not allocate a new simulation, so they should not
-            # count toward the memory-leak restart threshold.
             if result.get("status") != "skipped":
                 episodes_since_restart += 1
 
             result["episodes_since_restart"] = episodes_since_restart
-            result["restart_worker"] = (
-                cfg.restart_every > 0
-                and episodes_since_restart >= cfg.restart_every
-            )
+            result["restart_worker"] = cfg.restart_every > 0 and episodes_since_restart >= cfg.restart_every
             child_pipe.send(result)
             continue
 
@@ -303,13 +291,10 @@ def collector_worker(rank: int, num_processes: int, child_pipe: Connection, cfg:
 
     child_pipe.close()
 
+
 def start_one_worker(rank: int, cfg: CollectorConfig) -> Tuple[mp.Process, Connection]:
     parent_pipe, child_pipe = mp.Pipe()
-    proc = mp.Process(
-        target=collector_worker,
-        args=(rank, cfg.num_processes, child_pipe, cfg),
-        daemon=False,
-    )
+    proc = mp.Process(target=collector_worker, args=(rank, child_pipe, cfg), daemon=False)
     proc.start()
     return proc, parent_pipe
 
@@ -351,10 +336,8 @@ def restart_one_worker(
     parent_pipes: List[Connection],
 ) -> None:
     close_one_worker(processes[rank], parent_pipes[rank])
-    proc, pipe = start_one_worker(rank, cfg)
-    processes[rank] = proc
-    parent_pipes[rank] = pipe
-    reset_one_worker(rank, pipe)
+    processes[rank], parent_pipes[rank] = start_one_worker(rank, cfg)
+    reset_one_worker(rank, parent_pipes[rank])
 
 
 def start_workers(cfg: CollectorConfig) -> Tuple[List[mp.Process], List[Connection]]:
@@ -368,18 +351,16 @@ def start_workers(cfg: CollectorConfig) -> Tuple[List[mp.Process], List[Connecti
 
     return processes, parent_pipes
 
+
 def run_parent_scheduler(cfg: CollectorConfig) -> List[Dict[str, Any]]:
     cfg.base_dir.mkdir(parents=True, exist_ok=True)
     processes, parent_pipes = start_workers(cfg)
-
     results: List[Dict[str, Any]] = []
 
     try:
-        # RESET all workers first.
         for rank, pipe in enumerate(parent_pipes):
             reset_one_worker(rank, pipe)
 
-        # Dynamic scheduling: give each free worker exactly one next episode.
         next_episode = 0
         active: Dict[int, int] = {}
 
@@ -392,11 +373,8 @@ def run_parent_scheduler(cfg: CollectorConfig) -> List[Dict[str, Any]]:
 
         with tqdm(total=cfg.num_episodes, desc="Collecting episodes") as pbar:
             while active:
-                # Poll avoids blocking forever on a worker that is not the next one in rank order.
                 for rank, pipe in enumerate(parent_pipes):
-                    if rank not in active:
-                        continue
-                    if not pipe.poll(0.05):
+                    if rank not in active or not pipe.poll(0.05):
                         continue
 
                     result = pipe.recv()
@@ -407,7 +385,7 @@ def run_parent_scheduler(cfg: CollectorConfig) -> List[Dict[str, Any]]:
                     if result.get("status") == "error":
                         pbar.write(
                             f"[worker {rank}] episode {result.get('episode_id')} failed; "
-                            f"see traceback in final summary."
+                            "see traceback in final summary."
                         )
 
                     if result.get("restart_worker") and next_episode < cfg.num_episodes:
@@ -424,7 +402,6 @@ def run_parent_scheduler(cfg: CollectorConfig) -> List[Dict[str, Any]]:
                         next_episode += 1
 
     finally:
-        # Ask every worker to close, even if collection failed.
         for proc, pipe in zip(processes, parent_pipes):
             close_one_worker(proc, pipe)
 
@@ -436,11 +413,11 @@ def parse_args() -> CollectorConfig:
     parser.add_argument("--num-episodes", type=int, default=5)
     parser.add_argument("--num-processes", type=int, default=max(1, min(8, os.cpu_count() or 1)))
     parser.add_argument("--base-seed", type=int, default=43)
-    parser.add_argument("--base-dir", type=Path, default=Path("./DP_data/pickup/episodes"))
+    parser.add_argument("--base-dir", type=Path, default=default_base_dir())
     parser.add_argument("--time-step", type=float, default=1.0 / 120.0)
-    parser.add_argument("--fps", type=int, default=20)
-    parser.add_argument("--max-steps", type=int, default=1000)
-    parser.add_argument("--record-every-n-sim-steps", type=int, default=6)
+    parser.add_argument("--fps", type=int, default=10)
+    parser.add_argument("--max-steps", type=int, default=2000)
+    parser.add_argument("--record-every-n-sim-steps", type=int, default=12)
     parser.add_argument("--use-gui", action="store_true", help="Only worker 0 uses GUI; others remain DIRECT.")
     parser.add_argument("--overwrite", action="store_true", help="Delete existing episode dirs before recollecting.")
     parser.add_argument("--restart-every", type=int, default=50, help="Restart each worker after this many collected episodes; <=0 disables restart.")
@@ -488,12 +465,12 @@ def print_summary(results: List[Dict[str, Any]]) -> None:
 
 if __name__ == "__main__":
     mp.freeze_support()
-    # spawn is safer than fork for PyBullet/OpenGL/multiprocessing.
     try:
         mp.set_start_method("spawn")
     except RuntimeError:
         pass
 
     config = parse_args()
+    print(f"base_dir: {config.base_dir}")
     all_results = run_parent_scheduler(config)
     print_summary(all_results)

@@ -1,6 +1,6 @@
 """
 Usage:
-python eval.py --checkpoint data/outputs/2026.05.13/16.16.24_train_Phy_AgentOnly_image_PhyDomainAgentImage/checkpoints/epoch=0050-test_mean_score=1.000.ckpt -o data/PhyDomain_eval
+python eval.py --checkpoint data/outputs/2026.06.02/19.59.16_train_Phy_AgentOnly_image_PhyDomainAgentImage/checkpoints/latest.ckpt -o data/PhyDomain_eval
 """
 
 import sys
@@ -67,23 +67,26 @@ def main(checkpoint, output_dir, device):
     
     # run eval
     env_runner = PickUpEnvDebugRunner(
-                _seed =43,
-                randomize_image_noise = True,
+                _seed = 30000,
+                randomize_image_noise  = True,
                 randomize_lighting = True,
-                randomize_objpose = True,
-                randomize_distractors = True,
+                randomize_objpose  = True,
+                randomize_distractors  = True,
+                randomize_outlscene = True,
+                randomize_plane_height = True,
+                randomize_campose = True,
                 n_obs_steps=2,
-                n_action_steps=2,
+                n_action_steps=8,
                 output_dir=output_dir,
                 )
     runner_log = env_runner.run(policy)
     
-    # dump log to json
-    json_log = {k: to_jsonable(v) for k, v in runner_log.items()}
+    # # dump log to json
+    # json_log = {k: to_jsonable(v) for k, v in runner_log.items()}
 
-    out_path = os.path.join(output_dir, 'eval_log.json')
-    with open(out_path, 'w') as f:
-        json.dump(json_log, f, indent=2, sort_keys=True)
+    # out_path = os.path.join(output_dir, 'eval_log.json')
+    # with open(out_path, 'w') as f:
+    #     json.dump(json_log, f, indent=2, sort_keys=True)
 
 if __name__ == '__main__':
     main()

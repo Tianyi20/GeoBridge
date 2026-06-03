@@ -15,16 +15,22 @@ class PickUpEnv(gym.Env):
     def __init__(self, sim_steps_per_action=1,
                  connection_mode = p.DIRECT,
                  seed=42,
-                 randomize_image_noise=False,
-                 randomize_lighting=False,
-                 randomize_objpose=False,
-                 randomize_distractors=False,
+                 randomize_image_noise  = True,
+                 randomize_lighting = True,
+                 randomize_objpose  = True,
+                 randomize_distractors  = True,
+                 randomize_outlscene = True,
+                 randomize_plane_height = True,
+                 randomize_campose = True,
         ):
         self._seed = seed
         self.randomize_image_noise = randomize_image_noise
         self.randomize_lighting = randomize_lighting
         self.randomize_objpose = randomize_objpose
         self.randomize_distractors = randomize_distractors
+        self.randomize_outlscene = randomize_outlscene
+        self.randomize_plane_height = randomize_plane_height
+        self.randomize_campose = randomize_campose
         self.sim_steps_per_action = sim_steps_per_action
         
         # PyBullet: GUI 就不能vectorize,
@@ -56,7 +62,7 @@ class PickUpEnv(gym.Env):
                 low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
             ),
             "robot0_gripper_qpos": spaces.Box(
-                low=-np.inf, high=np.inf, shape=(2,), dtype=np.float32
+                low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32
             ),
         })
 
@@ -66,11 +72,12 @@ class PickUpEnv(gym.Env):
 
     def _build_sim(self):
         self._pybullet_client.resetSimulation()
-        self._pybullet_client.setTimeStep(1. / 240.)
+        self._pybullet_client.setTimeStep(1. / 120.)
         self._pybullet_client.setGravity(0, 0, -9.8)
 
         self.sim = PickUpSim(
             bullet_client=self._pybullet_client,
+            control_dt = 1. / 120.,
             offset=[0, 0, 0],
             seed=self._seed,
         )
@@ -78,26 +85,35 @@ class PickUpEnv(gym.Env):
         self.sim.enable_high_quality_rendering()
 
         self.sim.make_scene(
-            env_mesh_path= "./data/background/patched_table/tabletop.obj",
-            manipulated_obj_path= "./data/objects/banana/banana.obj",
-            initial_grasp_path= "./data/objects/banana/grasp.yaml",
-            # x work range : 0.7, 0.4
-            obj_pose_base = [0.55, 0.0, 0.1],
-            obj_euler_base = [math.pi/2, 0.0, math.pi/2],
-            randomize_image_noise= False,
-            randomize_lighting= True,
-            randomize_objpose= True,
-            x_jitter_range= 0.15,
-            y_jitter_range= 0.2,
-            z_axis_rotation_range = np.pi,
-            randomize_distractors= True,
-            distractor_root= "/mnt/storage/GoogleScannedObjects",
-            distractor_num_range= (0, 4),
-            distractor_target_size_range= (0.06, 0.3),
-            distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
-            # at least 10 pixel of the target object
-            distractor_min_target_mask_pixels= 10,)
-        
+                env_mesh_path= "./data/background/patched_table/tabletop.obj",
+                manipulated_obj_path= "./data/objects/banana/banana.obj",
+                initial_grasp_path= "./data/objects/banana/grasp.yaml",
+                obj_pose_base = [0.55, 0.0, 0.1],
+                obj_euler_base = [math.pi/2, 0.0, math.pi/2],
+                randomize_lighting= self.randomize_image_noise,
+                # outlier scene         
+                randomize_outlscene  = self.randomize_outlscene,
+                outlscene_xyz_jit    = 0.015,
+                outlscene_eul_jit    = 0.002,
+                # plane height randomization
+                randomize_plane_height = self.randomize_plane_height,
+                plane_height_jit = 0.002,
+                randomize_objpose  = self.randomize_objpose,
+                obj_x_jit    = 0.15,
+                obj_y_jit    = 0.2,
+                obj_z_eul_jit = np.pi,
+                randomize_campose =  self.randomize_campose,
+                cam_xyz_jit  = 0.004,
+                cam_eul_jit  = 0.002,
+                randomize_image_noise= self.randomize_image_noise,
+                randomize_distractors= self.randomize_distractors,
+                distractor_root= "/mnt/storage/GoogleScannedObjects",
+                distractor_num_range= (0, 4),
+                distractor_target_size_range= (0.06, 0.3),
+                distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
+                # at least 10 pixel of the target object
+                distractor_min_target_mask_pixels= 10,
+                )
 
     def reset(self):
         self._build_sim()
@@ -118,8 +134,7 @@ class PickUpEnv(gym.Env):
         # parse action
         target_pos = action[:3]
         target_orn = action[3:7]
-        gripper = float(action[7])
-        gripper = np.clip(gripper, 0.0, 0.04)
+        gripper = (action[7])
 
         # use sim native IK and step
         self.sim.solve_ik_and_apply(target_pos, target_orn)

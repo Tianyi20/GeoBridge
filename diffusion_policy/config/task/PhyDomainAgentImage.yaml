@@ -15,13 +15,13 @@ shape_meta: &shape_meta
     robot0_eef_quat:
       shape: [4]
     robot0_gripper_qpos:
-      shape: [2]
+      shape: [1]
   action: 
     shape: [8] # pos, quaternion, gripper
 
 task_name: &task_name PickUp_AgentImage
 dataset_type: &dataset_type ph
-dataset_path: &dataset_path /home/iadc/GeoBridge/DP_data/pickup/pickup.zarr
+dataset_path: &dataset_path ./data/DP_data/6_2_advanDR/pickup.zarr
 abs_action: &abs_action True
 
 env_runner:
@@ -29,7 +29,7 @@ env_runner:
   # dataset_path: *dataset_path
   # shape_meta: *shape_meta
   n_train: 10
-  max_steps: 800
+  max_steps: 500
   n_train_vis: 2
   # train_start_idx: 0
   n_test: 40
