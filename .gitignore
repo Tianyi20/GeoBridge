@@ -1,1 +1,24 @@
-data
+# Data
+data/
+DP_data/
+franka_standalone/collected_data/
+
+# Checkpoints / large model artifacts
+GeoBridgeCheckpoints/
+*.ckpt
+*.pth
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Debug / scratch artifacts
+imagedebug.jpg
+temp_rgb*.png
+*.ply
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
