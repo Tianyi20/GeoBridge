@@ -2,7 +2,7 @@
 Multiprocessing data collector for the updated PickUpSim.
 
 Example:
-  python record_data_mp_restart_updated.py --num-episodes 3000 --num-processes 24 --restart-every 2
+  python MP_collectdata.py --num-episodes 3000 --num-processes 24 --restart-every 2
 
 Design:
   - Parent process only schedules tasks and reports progress.
@@ -128,7 +128,7 @@ def collect_one_episode(
         while not sim.done and sim_step < max_steps:
             should_record = sim_step % record_every_n_sim_steps == 0
             if should_record:
-                obs = sim.collect_observation(direct=False)
+                obs = sim.collect_observation(direct=True)
 
             sim.step()
 

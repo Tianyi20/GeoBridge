@@ -1,0 +1,76 @@
+version: 1
+
+object:
+  name: bracket
+  obj_path: /home/iadc/GeoBridge/data/objects/bracket/bracket.obj
+  initial_grasp_path: /home/iadc/GeoBridge/data/objects/bracket/bracket_grasp.yaml
+  auto_repair: true
+
+output:
+  root: /home/iadc/GeoBridge/data/objects/bracket/fpsa_aug_outputs
+  layout: flat          # flat | per_shape_dir
+  overwrite: false
+  save_grasp: true
+  save_debug: true
+
+solver:
+  max_iters: 20
+  handle_error_distrib_enabled: false
+  k_ring: 2
+  use_distance_weights: true
+  quat_order: xyzw
+  return_format: dict
+  visualize_grasp_transfer: false
+
+sampler:
+  seed: 42
+  n_shapes: 10
+  max_workers: 8
+  mp_start_method: spawn
+  labels: [bracket_x_stretch]
+  label_mode: balanced  # balanced | random_one | random_k | all
+  labels_per_shape: 1
+
+# 每个 deformation 是一个 function-preserving shape augmentation label。
+# constrained_ids 是固定/约束点；reshaped_ids 是 handle points。
+# runner 会自动把 reshaped_ids 也加入 constraint_ids，避免 FPSA.displacement_reshape 的 subset 限制。
+deformations:
+  - label: bracket_x_stretch
+    type: displacement
+    description: Move selected bracket handles along +x; e.g. longer outer span while keeping functional anchors fixed.
+    constrained_ids: [330, 344, 345, 346, 378, 20, 1117]
+    reshaped_ids: [378, 20]
+    reshaped_vector: [1.0, 0.0, 0.0]
+    range: [-0.02, 0.04]   # public FPSA displacement units; e.g. meters if your mesh uses meters
+    coupled: true           # true: same sampled scalar for all reshaped_ids
+    normalize_vector: true
+    distribution: uniform
+    weight: 1.0
+
+  - label: bracket_x_shrink
+    type: displacement
+    description: Move the same handles along -x to create smaller bracket variants.
+    constrained_ids: [330, 344, 345, 346, 378, 20, 1117]
+    reshaped_ids: [378, 20]
+    reshaped_vector: [-1.0, 0.0, 0.0]
+    range: [0.005, 0.025]
+    coupled: true
+    normalize_vector: true
+    distribution: uniform
+    weight: 1.0
+
+  - label: bracket_asymmetric_x
+    type: displacement
+    description: Independent handle motion; useful for mild asymmetric variants.
+    constrained_ids: [330, 344, 345, 346, 378, 20, 1117]
+    reshaped_ids: [378, 20]
+    reshaped_vector:
+      - [1.0, 0.0, 0.0]
+      - [1.0, 0.0, 0.0]
+    range:
+      - [-0.015, 0.035]
+      - [-0.005, 0.020]
+    coupled: false
+    normalize_vector: true
+    distribution: uniform
+    weight: 0.5

@@ -205,10 +205,7 @@ class ShapeAugmentor:
         )
 
         face_k1, face_k2 = self.get_fk()
-
-        ic(constraint_ids)
-        ic(target_positions_for_solver)
-
+        
         V_opt = sr.optimize_mesh(
             self.V,
             self.F,

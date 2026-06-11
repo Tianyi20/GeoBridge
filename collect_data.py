@@ -39,7 +39,7 @@ def collect_one_episode(sim :PickUpSim,
 
     while (not sim.done) and sim_step < max_steps:
         if sim_step % record_every_n_sim_steps == 0:
-            obs = sim.collect_observation(direct= False)   # 先采当前观测 s_t
+            obs = sim.collect_observation(direct= True)   # 先采当前观测 s_t
         # 计算并下发本步控制
         sim.step()   
 

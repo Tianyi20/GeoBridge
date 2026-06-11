@@ -3,18 +3,21 @@ import numpy as np
 from icecream import ic
 
 if __name__ == "__main__":
-    obj_path = "/home/iadc/GeoBridge/data/objects/mug/original_mug/model.obj"
-    initial_grasp_path = "/home/iadc/GeoBridge/data/objects/mug/original_mug/mug_grasp.yaml"
+    obj_path = "/home/iadc/GeoBridge/data/objects/bracket/bracket.obj"
+    initial_grasp_path = "/home/iadc/GeoBridge/data/objects/bracket/bracket_grasp.yaml"
 
     augmentor = ShapeAugmentor(obj_path=obj_path, 
                                initial_grasp_path=initial_grasp_path)
     
-    augmentor.displacement_reshape(constraint_ids= [1087, 1135, 1260, 1276, 3551],
-                                   displace_idxs= [3551],
-                                   displacements= np.array([0.0067756052628117945,
-                                                -1.566278750761965e-08,
-                                                -0.1021735721360982]),
+    augmentor.displacement_reshape(constraint_ids= [330, 344, 345, 346, 378, 20, 1117],
+                                   displace_idxs= [378, 20],
                                     )
+    
+    
+    # let 3551, 20 id vertice all deform along x-axis direction
+    # range is between -2cm,4cm
+    # you can also use augmentor.slippage_reshape
+
     augmentor.write_augment_obj(output_path = "test.obj")
 
     T_new, anchor, debug = augmentor.transfer_initial_grasp_guess(

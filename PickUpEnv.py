@@ -144,7 +144,7 @@ class PickUpEnv(gym.Env):
             self._pybullet_client.stepSimulation()
 
         # use native get obs and is success
-        obs = self.sim.collect_observation()
+        obs = self.sim.collect_observation(direct= False)
         self._last_obs = obs
         done = self.sim.is_success()
         # reward is done, sparse reward

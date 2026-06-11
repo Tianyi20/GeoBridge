@@ -21,6 +21,11 @@ ic| controller.get_gripper_width(): 0.08021380007266998
 python franka_export_mesh_by_joints.py   --urdf franka_panda/panda.urdf   --output franka_panda_pose.ply
 ```
 
+ 
+```shell
+python get_initial_grasp_guess.py data/objects/bracket/bracket.obj --out bracket_pose.yaml
+```
+
 
 ```sh
 blender -b --python usdz_to_obj.py -- \
