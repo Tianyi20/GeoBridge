@@ -4,7 +4,7 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from VisualDR import LightingDR, ImgNoiseDR, DistractorDR, PoseDR
+from VisualDR import LightingDR, ImgNoiseDR, DistractorDR, PoseDR, ObjectColorDR
 from pybullet_utility import (
     load_models,
     coacd_convex_decomposition,
@@ -66,6 +66,7 @@ class PickUpSim(object):
         self.outsceneDR = PoseDR(self.bullet_client, seed=seed)
         self.collplaneDR = PoseDR(self.bullet_client, seed=seed)
         self.distractorDR = DistractorDR(self.bullet_client, seed=seed)
+        self.objectColorDR = ObjectColorDR(self.bullet_client, seed=seed)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -123,7 +124,7 @@ class PickUpSim(object):
 
         ################## Load Panda robot #################
         self.panda = self.bullet_client.loadURDF(
-            "franka_panda/panda.urdf",
+            "franka_panda/panda_wristcam.urdf",
             np.array([0, 0, 0]) + self.offset,
             base_orn,
             useFixedBase=True,
@@ -210,6 +211,13 @@ class PickUpSim(object):
                    cam_xyz_jit  = 0.004,
                    cam_eul_jit  = 0.002,
                    randomize_image_noise = True,
+                   # manipulated object color / material randomization
+                   randomize_object_color = True,
+                   object_color_mode = "bounded",  # "bounded" or "recolor"
+                   object_color_strength = 0.35,
+                   object_recolor_palette = None,
+                   object_recolor_target_color = None,
+                   object_specular_range = (0.02, 0.15),
                    randomize_distractors = True,
                    distractor_root = "/mnt/storage/GoogleScannedObjects",
                    distractor_num_range = (1, 5),
@@ -351,6 +359,27 @@ class PickUpSim(object):
             center_of_mass=np.array(self.com_pick_up_obj),
             lateral_friction=0.6,
         )
+
+        # Object-level color / material domain randomization.
+        # This is applied after the target object has been loaded into PyBullet.
+        # It reads the current visual rgbaColor as the original/base color, then
+        # applies a global tint through changeVisualShape(). For textured OBJ
+        # assets, the PNG texture is not edited/replaced; the tint is applied on
+        # top of the existing visual material, so texture details can remain.
+        if randomize_object_color:
+            self.object_color_cfg = self.objectColorDR.sample_and_apply_object_color_randomization(
+                body_id=self.pick_up_obj_id,
+                mode=object_color_mode,
+                strength=object_color_strength,
+                recolor_palette=object_recolor_palette,
+                recolor_target_color=object_recolor_target_color,
+                specular_range=object_specular_range,
+                alpha=None,  # preserve current visual alpha
+            )
+        else:
+            self.objectColorDR.reset()
+            self.object_color_cfg = None
+
         self.initial_grasp_guess = load_initial_grasp_pose(initial_grasp_path)
 
         # Let the manipulated object settle first. The resulting AABB/grasp pose is
