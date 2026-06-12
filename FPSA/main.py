@@ -9,15 +9,14 @@ if __name__ == "__main__":
     augmentor = ShapeAugmentor(obj_path=obj_path, 
                                initial_grasp_path=initial_grasp_path)
     
-    augmentor.displacement_reshape(constraint_ids= [330, 344, 345, 346, 378, 20, 1117],
-                                   displace_idxs= [378, 20],
+    augmentor.displacement_reshape(constraint_ids= [339, 343, 345, 346, 846],
+                                   displace_idxs= [846],
+                                   displacements= np.array([0.21873721885442937,
+                                                        -4.568995076824393e-09,
+                                                        -8.609569257000194e-10]),
+                                    max_iters= 100
                                     )
     
-    
-    # let 3551, 20 id vertice all deform along x-axis direction
-    # range is between -2cm,4cm
-    # you can also use augmentor.slippage_reshape
-
     augmentor.write_augment_obj(output_path = "test.obj")
 
     T_new, anchor, debug = augmentor.transfer_initial_grasp_guess(

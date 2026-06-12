@@ -1,15 +1,45 @@
+import os
+
 import numpy as np
 import igl
 import trimesh
+import coacd
 import slippage_reshaping as sr
 from pathlib import Path
 import open3d as o3d
 from ultility import load_initial_grasp_pose
 from icecream import ic
 
+def coacd_convex_decomposition(obj_filename,threshold = 0.03, preprocess_resolution = 100):
+    """
+    COACD convex decomposition
+    """
+    output_file = os.path.splitext(obj_filename)[0] + "_coacd.obj"
+
+    if os.path.exists(output_file):
+        print(f"[COACD]: Convex decomposition mesh {output_file} exists")
+        return output_file
+    
+    mesh = trimesh.load(obj_filename, force="mesh")
+    mesh = coacd.Mesh(mesh.vertices, mesh.faces)
+    #result = coacd.run_coacd(mesh, threshold= 0.02, mcts_max_depth= 5, mcts_nodes= 30, preprocess_mode= "False") # a list of convex hulls.
+    result = coacd.run_coacd(mesh, threshold = threshold, preprocess_resolution =preprocess_resolution) # a list of convex hulls.
+
+    mesh_parts = []
+    for vs, fs in result:
+        mesh_parts.append(trimesh.Trimesh(vs, fs))
+    scene = trimesh.Scene()
+    np.random.seed(0)
+    for p in mesh_parts:
+        p.visual.vertex_colors[:, :3] = (np.random.rand(3) * 255).astype(np.uint8)
+        scene.add_geometry(p)
+    scene.export(output_file)
+
+    return output_file
+
 
 class ShapeAugmentor:
-    def __init__(self, obj_path, initial_grasp_path=None, auto_repair=True):
+    def __init__(self, obj_path, initial_grasp_path=None):
         self.obj_path = Path(obj_path)
 
         self.mesh = trimesh.load(
@@ -31,13 +61,18 @@ class ShapeAugmentor:
         self.face_k1 = None
         self.face_k2 = None
         self._vertex_adj = None
+        self._coacd_template_parts = None
 
         self._sync_arrays()
 
-        if auto_repair and not self.is_manifold():
+        if not self.is_manifold():
             print("Input mesh is not manifold. Running safe in-place repair...")
-            self.repair_mesh(inplace=True)
-
+            raise ValueError("Input mesh is not manifold. Repair mesh firstly.")
+        
+        # Run COACD only once on the base mesh.
+        # Later FPSA outputs reuse this decomposition topology and only update
+        # the convex-part vertices by barycentric transfer from self.V -> self.V_opt.
+        self.mesh_coacd = coacd_convex_decomposition(str(self.obj_path))
     # ============================================================
     # Mesh utilities
     # ============================================================
@@ -52,14 +87,10 @@ class ShapeAugmentor:
         if self.F.ndim != 2 or self.F.shape[1] != 3:
             raise ValueError(f"Input mesh must be triangulated, got F.shape={self.F.shape}")
 
-    def _to_o3d(self):
+    def mesh_status(self):
         mesh_o3d = o3d.geometry.TriangleMesh()
         mesh_o3d.vertices = o3d.utility.Vector3dVector(np.asarray(self.mesh.vertices))
         mesh_o3d.triangles = o3d.utility.Vector3iVector(np.asarray(self.mesh.faces))
-        return mesh_o3d
-
-    def mesh_status(self):
-        mesh_o3d = self._to_o3d()
 
         return {
             "edge_manifold_allow_boundary": mesh_o3d.is_edge_manifold(allow_boundary_edges=True),
@@ -77,48 +108,7 @@ class ShapeAugmentor:
             and status["orientable"]
         )
 
-    def repair_mesh(self, inplace=True, merge_vertices=False):
-        mesh = self.mesh if inplace else self.mesh.copy()
 
-        before = self.mesh_status()
-
-        # Safe repair:
-        # 1. remove duplicated faces
-        # 2. remove degenerate faces
-        # 3. fix normals
-        #
-        # Do not remove unreferenced vertices or merge vertices by default,
-        # because those operations can change vertex ids and break constraints/anchors.
-        face_mask = mesh.unique_faces() & mesh.nondegenerate_faces()
-        mesh.update_faces(face_mask)
-
-        if merge_vertices:
-            # Warning: this changes vertex ids.
-            mesh.remove_unreferenced_vertices()
-            mesh.merge_vertices(merge_tex=False, merge_norm=False)
-
-        mesh.fix_normals()
-
-        if inplace:
-            self.mesh = mesh
-            self._sync_arrays()
-            self.face_k1 = None
-            self.face_k2 = None
-            self.V_opt = None
-
-        after = self.mesh_status()
-
-        print("Mesh repair status:")
-        print("  before:", before)
-        print("  after: ", after)
-
-        if not self.is_manifold():
-            print(
-                "Warning: mesh is still not manifold after safe repair. "
-                "A stronger repair would likely change topology, vertex ids, or texture seams."
-            )
-
-        return mesh
 
     # ============================================================
     # Slippage-preserving reshaping
@@ -199,14 +189,16 @@ class ShapeAugmentor:
 
         absolute_displacements = target_positions - constraint_vertices
 
-        # This is what the optimizer should receive: absolute target positions.
+        # The C++ deformation side later divides the constraint displacement by
+        # bbox_diag.  Therefore, to make the solver see the user-requested
+        # displacement magnitude, we pass a bbox_diag-scaled target position.
         target_positions_for_solver = (
             constraint_vertices + absolute_displacements * bbox_diag
         )
 
         face_k1, face_k2 = self.get_fk()
-        
-        V_opt = sr.optimize_mesh(
+
+        V_opt_raw = sr.optimize_mesh(
             self.V,
             self.F,
             face_k1,
@@ -218,7 +210,19 @@ class ShapeAugmentor:
             input_name=input_name or self.obj_path.stem,
         )
 
-        self.V_opt = np.asarray(V_opt, dtype=np.float64)
+        # sr.optimize_mesh returns vertices whose displacement is still in the
+        # same normalized units used internally by FPSA.  Convert the final mesh
+        # back to the real object scale before exporting / COACD transfer / grasp
+        # transfer:
+        #     V_opt = V + (V_opt_raw - V) * bbox_diag
+        V_opt_raw = np.asarray(V_opt_raw, dtype=np.float64)
+        if V_opt_raw.shape != self.V.shape:
+            raise ValueError(
+                f"optimize_mesh returned V_opt with shape {V_opt_raw.shape}, "
+                f"expected {self.V.shape}"
+            )
+
+        self.V_opt = self.V + (V_opt_raw - self.V) / bbox_diag
         return self.V_opt
 
     def displacement_reshape(
@@ -266,7 +270,7 @@ class ShapeAugmentor:
             input_name=input_name,
         )
 
-    def write_augment_obj(self, output_path):
+    def write_augment_obj(self, output_path, write_coacd=True, return_paths=False):
         if self.V_opt is None:
             raise ValueError("No optimized vertices found. Please run slippage_reshape() first.")
 
@@ -276,6 +280,218 @@ class ShapeAugmentor:
         out_mesh = self.mesh.copy()
         out_mesh.vertices = np.asarray(self.V_opt, dtype=np.float64)
         out_mesh.export(output_path)
+
+        coacd_output_path = None
+        if write_coacd:
+            coacd_output_path = self.write_deformed_coacd_obj(obj_filename=output_path)
+
+        if return_paths:
+            return str(output_path), coacd_output_path
+        return None
+
+    # ============================================================
+    # Cached COACD deformation transfer
+    # ============================================================
+
+    @staticmethod
+    def _load_scene_parts_as_meshes(mesh_path):
+        """
+        Load a COACD OBJ as separate convex parts.
+
+        COACD is exported as a trimesh.Scene, so loading it as one forced mesh
+        would lose the part boundaries.  Keeping parts separated is useful for
+        pybullet / simulator collision meshes.
+        """
+        mesh_path = Path(mesh_path)
+        loaded = trimesh.load(str(mesh_path), force="scene", process=False)
+
+        if isinstance(loaded, trimesh.Trimesh):
+            return [loaded.copy()]
+
+        if not isinstance(loaded, trimesh.Scene):
+            raise TypeError(f"Expected Trimesh or Scene from {mesh_path}, got {type(loaded)}")
+
+        dumped = loaded.dump(concatenate=False)
+        if isinstance(dumped, trimesh.Trimesh):
+            dumped = [dumped]
+
+        parts = []
+        for part in dumped:
+            if isinstance(part, trimesh.Trimesh) and len(part.vertices) > 0 and len(part.faces) > 0:
+                parts.append(part.copy())
+
+        if len(parts) == 0:
+            raise ValueError(f"No mesh parts found in COACD file: {mesh_path}")
+
+        return parts
+
+    @staticmethod
+    def _copy_visual_data(mesh):
+        """
+        Copy only concrete visual arrays from a Trimesh.
+
+        Do not store/copy trimesh.visual.ColorVisuals itself here: after it is
+        detached from its source mesh, ColorVisuals.copy() may try to read
+        self.mesh.faces and crash with "NoneType has no attribute faces".
+        """
+        visual_data = {}
+        visual = getattr(mesh, "visual", None)
+        if visual is None:
+            return visual_data
+
+        # COACD parts in this file are colored through vertex_colors, but after
+        # OBJ export/reload trimesh may expose usable face_colors instead.  Store
+        # both when their lengths match the mesh topology.
+        try:
+            vertex_colors = np.asarray(visual.vertex_colors).copy()
+            if vertex_colors.ndim == 2 and len(vertex_colors) == len(mesh.vertices):
+                visual_data["vertex_colors"] = vertex_colors
+        except Exception:
+            pass
+
+        try:
+            face_colors = np.asarray(visual.face_colors).copy()
+            if face_colors.ndim == 2 and len(face_colors) == len(mesh.faces):
+                visual_data["face_colors"] = face_colors
+        except Exception:
+            pass
+
+        return visual_data
+
+    @staticmethod
+    def _apply_visual_data(mesh, visual_data):
+        """Apply visual arrays copied by _copy_visual_data() to a new mesh."""
+        if not isinstance(visual_data, dict):
+            return
+
+        vertex_colors = visual_data.get("vertex_colors")
+        face_colors = visual_data.get("face_colors")
+
+        if vertex_colors is not None and len(vertex_colors) == len(mesh.vertices):
+            mesh.visual.vertex_colors = np.asarray(vertex_colors).copy()
+        elif face_colors is not None and len(face_colors) == len(mesh.faces):
+            mesh.visual.face_colors = np.asarray(face_colors).copy()
+
+    def _build_coacd_deformation_template(self):
+        """
+        Precompute how each base COACD vertex attaches to the base mesh surface.
+
+        Each convex-part vertex is projected once onto the original FPSA mesh.
+        We store (face_id, barycentric coordinate).  For every later V_opt, the
+        same barycentric coordinate on the same original face id gives the
+        corresponding deformed COACD vertex.
+
+        This avoids rerunning coacd.run_coacd() after every shape deformation.
+        """
+        if self._coacd_template_parts is not None:
+            return self._coacd_template_parts
+
+        coacd_parts = self._load_scene_parts_as_meshes(self.mesh_coacd)
+        template_parts = []
+
+        for part_idx, part in enumerate(coacd_parts):
+            part_vertices = np.asarray(part.vertices, dtype=np.float64)
+            part_faces = np.asarray(part.faces, dtype=np.int64)
+
+            sqrD, face_ids, closest_points = igl.point_mesh_squared_distance(
+                part_vertices,
+                self.V,
+                self.F,
+            )
+
+            face_ids = np.asarray(face_ids, dtype=np.int64).reshape(-1)
+            closest_points = np.asarray(closest_points, dtype=np.float64)
+
+            barycentric = np.zeros((len(part_vertices), 3), dtype=np.float64)
+            for i, face_id in enumerate(face_ids):
+                tri = self.F[int(face_id)]
+                a, b, c = self.V[tri[0]], self.V[tri[1]], self.V[tri[2]]
+                barycentric[i] = self._point_triangle_barycentric(
+                    closest_points[i],
+                    a,
+                    b,
+                    c,
+                )
+
+            template_parts.append({
+                "name": f"coacd_part_{part_idx:04d}",
+                "faces": part_faces.copy(),
+                "face_ids": face_ids.copy(),
+                "barycentric": barycentric,
+                "visual_data": self._copy_visual_data(part),
+                "metadata": dict(part.metadata) if part.metadata is not None else {},
+                "mean_bind_error": float(np.sqrt(np.asarray(sqrD, dtype=np.float64)).mean()),
+                "max_bind_error": float(np.sqrt(np.asarray(sqrD, dtype=np.float64)).max()),
+            })
+
+        self._coacd_template_parts = template_parts
+        return self._coacd_template_parts
+
+    def _deform_coacd_vertices_from_template(self, template_part, deformed_vertices):
+        face_ids = np.asarray(template_part["face_ids"], dtype=np.int64)
+        barycentric = np.asarray(template_part["barycentric"], dtype=np.float64)
+        deformed_vertices = np.asarray(deformed_vertices, dtype=np.float64)
+
+        tri_ids = self.F[face_ids]
+        tri_vertices = deformed_vertices[tri_ids]
+
+        # Sum_j barycentric[:, j] * deformed_vertices[face_vertex_j].
+        return np.einsum("ni,nij->nj", barycentric, tri_vertices)
+
+    def write_deformed_coacd_obj(self, obj_filename=None, output_path=None):
+        """
+        Write the COACD mesh corresponding to the current FPSA deformation.
+
+        Naming convention:
+            output_path = os.path.splitext(obj_filename)[0] + "_coacd.obj"
+
+        Args:
+            obj_filename:
+                The deformed object filename.  If output_path is not given, this
+                filename decides the generated COACD filename.  For example:
+                    bracket_003.obj -> bracket_003_coacd.obj
+            output_path:
+                Optional explicit path.  Usually keep this None to use the
+                same naming rule as coacd_convex_decomposition().
+
+        Returns:
+            str path to the written deformed COACD OBJ.
+        """
+        if self.V_opt is None:
+            raise ValueError("No optimized vertices found. Please run slippage_reshape() first.")
+
+        if output_path is None:
+            if obj_filename is None:
+                raise ValueError(
+                    "obj_filename must be provided when output_path is None, "
+                    "otherwise the base mesh _coacd.obj could be overwritten."
+                )
+            output_path = os.path.splitext(str(obj_filename))[0] + "_coacd.obj"
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        template_parts = self._build_coacd_deformation_template()
+        scene = trimesh.Scene()
+
+        for template_part in template_parts:
+            deformed_part_vertices = self._deform_coacd_vertices_from_template(
+                template_part,
+                self.V_opt,
+            )
+
+            deformed_part = trimesh.Trimesh(
+                vertices=deformed_part_vertices,
+                faces=template_part["faces"].copy(),
+                process=False,
+            )
+            self._apply_visual_data(deformed_part, template_part.get("visual_data", {}))
+            deformed_part.metadata.update(template_part["metadata"])
+            scene.add_geometry(deformed_part, geom_name=template_part["name"])
+
+        scene.export(str(output_path))
+        print(f"[COACD]: Wrote deformed cached decomposition mesh {output_path}")
+        return str(output_path)
 
     # ============================================================
     # Geometry helpers for anchors and patches
