@@ -10,6 +10,8 @@ Design notes:
     - Every generated shape is produced from the original mesh, not from the previous output.
     - Multiple labels can be composed in one sample by building one target_positions array and
       calling slippage_reshape once.
+    - Displacement magnitudes are sampled by deterministic linspace over each label range,
+      so generated shapes evenly cover the specified deformation interval.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import multiprocessing as mp
 import os
 import random
 import traceback
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,41 +67,6 @@ def dump_yaml_or_json(path: str | Path, data: Dict[str, Any]) -> None:
             path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     else:
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def write_grasp_pose_yaml(
-    path: str | Path,
-    T_mesh_hand_tcp: Any,
-    initial_grasp_guess: Optional[Dict[str, Any]],
-    mesh_path: str | Path,
-) -> None:
-    """Write a grasp pose YAML compatible with load_initial_grasp_pose()."""
-    if isinstance(T_mesh_hand_tcp, dict):
-        T = np.asarray(T_mesh_hand_tcp["T_mesh_hand_tcp"], dtype=np.float64)
-    else:
-        T = np.asarray(T_mesh_hand_tcp, dtype=np.float64)
-
-    if T.shape != (4, 4):
-        raise ValueError(f"T_mesh_hand_tcp must be 4x4, got {T.shape}")
-
-    old = initial_grasp_guess if isinstance(initial_grasp_guess, dict) else {}
-    opening = float(old.get("opening", old.get("opening_width_m", 0.06)))
-
-    data = {
-        "mesh_path": str(mesh_path),
-        "reference_frame": str(old.get("reference_frame", "mesh_local_frame")),
-        "hand_frame": str(old.get("hand_frame", "panda_hand")),
-        "opening_width_m": opening,
-        "pregrasp_opening_width_m": float(
-            old.get("pregrasp_opening", old.get("pregrasp_opening_width_m", opening))
-        ),
-        "finger_joint_m": float(
-            old.get("finger_joint", old.get("finger_joint_m", opening / 2.0))
-        ),
-        "T_mesh_hand": T,
-        "T_mesh_hand_tcp": T,
-    }
-    dump_yaml_or_json(path, data)
 
 
 def to_builtin(x: Any) -> Any:
@@ -225,39 +193,64 @@ def vector_for_index(vec_spec: Any, i: int, n: int, normalize: bool = True) -> n
     raise ValueError(f"reshaped_vector must be shape (3,) or ({n}, 3), got {arr.shape}")
 
 
-def sample_one_scalar(range_spec: Any, rng: np.random.Generator, distribution: str = "uniform") -> float:
+def linspace_one_scalar(
+    range_spec: Any,
+    index: int,
+    count: int,
+    distribution: str = "uniform",
+) -> float:
     """
-    Supported range formats:
-      [-0.02, 0.04]                       -> uniform low/high
+    Deterministic scalar sampler for shape augmentation.
+
+    Main supported formats:
+      [-0.02, 0.04]
       {type: uniform, low: -0.02, high: 0.04}
-      {type: normal, mean: 0.0, std: 0.01, clip: [-0.02, 0.04]}
-      {type: choice, values: [-0.02, 0.0, 0.04]}
       {type: fixed, value: 0.02}
+      {type: choice, values: [-0.02, 0.0, 0.04]}
+
+    For low/high ranges, this uses np.linspace(low, high, count)[index].
+    Therefore count > 1 includes both endpoints.
+
+    If count == 1, it returns the midpoint instead of the lower endpoint,
+    so generating one shape does not always choose the most negative deformation.
     """
+    index = int(index)
+    count = int(count)
+    if count <= 0:
+        raise ValueError(f"linspace count must be positive, got {count}")
+    if index < 0 or index >= count:
+        raise ValueError(f"linspace index must be in [0, {count}), got {index}")
+
+    def _linspace_value(lo: float, hi: float) -> float:
+        lo = float(lo)
+        hi = float(hi)
+        if count == 1:
+            return float(0.5 * (lo + hi))
+        return float(np.linspace(lo, hi, count, dtype=np.float64)[index])
+
     if isinstance(range_spec, dict):
         typ = str(range_spec.get("type", distribution)).lower()
         if typ == "uniform":
-            return float(rng.uniform(float(range_spec["low"]), float(range_spec["high"])))
-        if typ == "normal":
-            x = float(rng.normal(float(range_spec.get("mean", 0.0)), float(range_spec["std"])))
-            if "clip" in range_spec and range_spec["clip"] is not None:
-                lo, hi = range_spec["clip"]
-                x = float(np.clip(x, float(lo), float(hi)))
-            return x
-        if typ == "choice":
-            values = list(range_spec["values"])
-            return float(values[int(rng.integers(0, len(values)))])
+            return _linspace_value(float(range_spec["low"]), float(range_spec["high"]))
         if typ == "fixed":
             return float(range_spec["value"])
-        raise ValueError(f"Unsupported range type: {typ}")
+        if typ == "choice":
+            values = list(range_spec["values"])
+            if len(values) == 0:
+                raise ValueError("choice range requires a non-empty values list")
+            return float(values[index % len(values)])
+        if typ == "normal":
+            raise ValueError(
+                "distribution/type='normal' is disabled for deterministic linspace sampling. "
+                "Use range: [low, high] or {type: uniform, low: ..., high: ...}."
+            )
+        raise ValueError(f"Unsupported range type for linspace sampling: {typ}")
 
     arr = np.asarray(range_spec, dtype=np.float64)
     if arr.shape == (2,):
-        lo, hi = float(arr[0]), float(arr[1])
-        if distribution == "uniform":
-            return float(rng.uniform(lo, hi))
-        raise ValueError(f"distribution='{distribution}' needs dict range format")
-    raise ValueError(f"Invalid scalar range format: {range_spec}")
+        return _linspace_value(float(arr[0]), float(arr[1]))
+
+    raise ValueError(f"Invalid scalar range format for linspace sampling: {range_spec}")
 
 
 def range_for_index(range_spec: Any, i: int, n: int) -> Any:
@@ -286,8 +279,13 @@ def range_for_index(range_spec: Any, i: int, n: int) -> Any:
     raise ValueError(f"range must be one scalar range or {n} per-id ranges, got: {range_spec}")
 
 
-def sample_deformation(spec: DeformationSpec, rng: np.random.Generator) -> Dict[str, Any]:
-    """Sample one deformation operation from a label spec."""
+def sample_deformation(
+    spec: DeformationSpec,
+    rng: np.random.Generator,
+    linspace_index: int,
+    linspace_count: int,
+) -> Dict[str, Any]:
+    """Build one deformation operation using deterministic linspace range coverage."""
     if spec.type not in {"displacement", "slippage"}:
         raise ValueError(
             f"Unsupported deformation type='{spec.type}'. "
@@ -302,10 +300,23 @@ def sample_deformation(spec: DeformationSpec, rng: np.random.Generator) -> Dict[
     magnitudes: List[float] = []
 
     if spec.coupled:
-        mag = sample_one_scalar(range_for_index(spec.range, 0, n), rng, spec.distribution)
+        mag = linspace_one_scalar(
+            range_for_index(spec.range, 0, n),
+            index=linspace_index,
+            count=linspace_count,
+            distribution=spec.distribution,
+        )
         mags = [mag] * n
     else:
-        mags = [sample_one_scalar(range_for_index(spec.range, i, n), rng, spec.distribution) for i in range(n)]
+        mags = [
+            linspace_one_scalar(
+                range_for_index(spec.range, i, n),
+                index=linspace_index,
+                count=linspace_count,
+                distribution=spec.distribution,
+            )
+            for i in range(n)
+        ]
 
     for i, mag in enumerate(mags):
         direction = vector_for_index(spec.reshaped_vector, i, n, spec.normalize_vector)
@@ -436,13 +447,13 @@ def _worker_generate_shape(job: Dict[str, Any]) -> Dict[str, Any]:
         if layout == "per_shape_dir":
             sample_dir = out_root / sample_name
             obj_out = sample_dir / f"{sample_name}.obj"
-            grasp_out = sample_dir / f"{sample_name}_grasp.yaml"
+            grasp_out = sample_dir / f"{sample_name}_grasp.npz"
             meta_out = sample_dir / f"{sample_name}_sample.yaml"
             debug_out = sample_dir / f"{sample_name}_debug.yaml"
         else:
             sample_dir = out_root
             obj_out = out_root / f"{sample_name}.obj"
-            grasp_out = out_root / f"{sample_name}_grasp.yaml"
+            grasp_out = out_root / f"{sample_name}_grasp.npz"
             meta_out = out_root / f"{sample_name}_sample.yaml"
             debug_out = out_root / f"{sample_name}_debug.yaml"
 
@@ -462,7 +473,6 @@ def _worker_generate_shape(job: Dict[str, Any]) -> Dict[str, Any]:
         # for composed labels, use global solver max_iters to keep behavior predictable.
         max_iters = int(solver_cfg.get("max_iters", 20))
         handle_error = bool(solver_cfg.get("handle_error_distrib_enabled", False))
-        visualize_grasp_transfer = bool(solver_cfg.get("visualize_grasp_transfer", False))
         if len(sampled_ops) == 1:
             label_name = sampled_ops[0]["label"]
             spec_dict = {d["label"]: d for d in meta.get("deformations", [])}[label_name]
@@ -489,20 +499,7 @@ def _worker_generate_shape(job: Dict[str, Any]) -> Dict[str, Any]:
                 quat_order=str(solver_cfg.get("quat_order", "xyzw")),
                 return_format=str(solver_cfg.get("return_format", "dict")),
             )
-            if visualize_grasp_transfer:
-                augmentor.visualize_deformed_grasp_pose(
-                            T_grasp_new=grasp_result,
-                            anchor=anchor,
-                            debug_info=grasp_debug,
-                            show_anchor=True,
-                            show_patch=True,
-                        )
-            write_grasp_pose_yaml(
-                grasp_out,
-                T_mesh_hand_tcp=grasp_result,
-                initial_grasp_guess=augmentor.initial_grasp_guess,
-                mesh_path=obj_out,
-            )
+            augmentor.write_transferred_grasp(grasp_out, grasp_result)
             grasp_written = True
         else:
             anchor = None
@@ -575,12 +572,32 @@ def make_jobs(
     selected = list(labels) if labels else sampler_cfg.get("labels", None)
     schedule = choose_labels(all_specs, selected, n_shapes, mode, rng, labels_per_shape=k)
 
+    # Count how many times each label appears in the full schedule.
+    # Each label then gets its own deterministic linspace over its range.
+    label_total_counts = Counter(label for label_names in schedule for label in label_names)
+    label_seen_counts = defaultdict(int)
+
     jobs = []
     for sample_id, label_names in enumerate(schedule):
         sample_seed = int(base_seed + 1000003 * sample_id)
         local_rng = np.random.default_rng(sample_seed)
-        sampled_ops = [sample_deformation(all_specs[label], local_rng) for label in label_names]
-        # print(sampled_ops[0]["displacements"])
+
+        sampled_ops = []
+        for label in label_names:
+            linspace_index = label_seen_counts[label]
+            linspace_count = label_total_counts[label]
+            label_seen_counts[label] += 1
+
+            sampled_ops.append(
+                sample_deformation(
+                    all_specs[label],
+                    local_rng,
+                    linspace_index=linspace_index,
+                    linspace_count=linspace_count,
+                )
+            )
+        print(sampled_ops[0]["displacements"])
+
         jobs.append({
             "sample_id": sample_id,
             "seed": sample_seed,
