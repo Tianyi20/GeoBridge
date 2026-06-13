@@ -4,7 +4,7 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from VisualDR import LightingDR, ImgNoiseDR, DistractorDR, PoseDR, ObjectColorDR
+from VisualDR import LightingDR, ImgNoiseDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR
 from pybullet_utility import (
     load_models,
     coacd_convex_decomposition,
@@ -67,6 +67,7 @@ class PickUpSim(object):
         self.collplaneDR = PoseDR(self.bullet_client, seed=seed)
         self.distractorDR = DistractorDR(self.bullet_client, seed=seed)
         self.objectColorDR = ObjectColorDR(self.bullet_client, seed=seed)
+        self.fpsaObjectDR = FPSAObjectDR(seed=seed)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -193,6 +194,9 @@ class PickUpSim(object):
                    env_mesh_path        = None,
                    manipulated_obj_path = None,
                    initial_grasp_path = None,
+                   if_FPSA = False,
+                   fpsa_aug_root = "~/GeoBridge/data/objects/bracket/fpsa_aug_outputs",
+                   fpsa_include_base = True,
                    obj_pose_base = [0.5, 0.0, 0.0],
                    obj_euler_base = [0.0, 0.0, 0.0],
                    randomize_lighting = True,
@@ -217,7 +221,7 @@ class PickUpSim(object):
                    object_color_strength = 0.35,
                    object_recolor_palette = None,
                    object_recolor_target_color = None,
-                   object_specular_range = (0.02, 0.15),
+                   object_specular_range = (0.02, 0.8),
                    randomize_distractors = True,
                    distractor_root = "/mnt/storage/GoogleScannedObjects",
                    distractor_num_range = (1, 5),
@@ -247,8 +251,20 @@ class PickUpSim(object):
         obj_pose_base = np.array(obj_pose_base, dtype=float).copy()
         obj_euler_base = np.array(obj_euler_base, dtype=float).copy()
 
+        if if_FPSA:
+            manipulated_obj_path, initial_grasp_path = self.fpsaObjectDR.sample(
+                base_mesh_path=manipulated_obj_path,
+                base_grasp_path=initial_grasp_path,
+                fpsa_aug_root=fpsa_aug_root,
+                include_base=fpsa_include_base,
+            )
+            self.fpsa_object_sample = self.fpsaObjectDR.last_sample
+        else:
+            self.fpsa_object_sample = None
+
         self.env_mesh_path = env_mesh_path
         self.pick_up_obj_path = manipulated_obj_path
+        self.initial_grasp_path = initial_grasp_path
         self.convex_pick_up_obj_path = coacd_convex_decomposition(self.pick_up_obj_path)
         self.com_pick_up_obj = get_com(self.pick_up_obj_path)
 

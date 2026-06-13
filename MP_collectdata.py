@@ -68,15 +68,18 @@ def default_base_dir() -> Path:
 
 def build_scene_kwargs() -> Dict[str, Any]:
     return {
-        "env_mesh_path": "./data/background/patched_table/tabletop.obj",
-        "manipulated_obj_path": "./data/objects/banana/banana.obj",
-        "initial_grasp_path": "./data/objects/banana/grasp.yaml",
+        "env_mesh_path": "./data/background/repaired_table/tabletop.obj",
+        "manipulated_obj_path": "./data/objects/bracket/bracket_texture/bracket.obj",
+        "initial_grasp_path": "./data/objects/bracket/bracket_texture/bracket_grasp.yaml",
+        "if_FPSA": True,
+        "fpsa_aug_root": "./data/objects/bracket/fpsa_aug_outputs",
+        "fpsa_include_base": True,
         "obj_pose_base": [0.55, 0.0, 0.1],
-        "obj_euler_base": [math.pi / 2, 0.0, math.pi / 2],
+        "obj_euler_base": [0.0, 0.0, 0.0],
         "randomize_lighting": True,
         "randomize_outlscene": True,
         "outlscene_xyz_jit": 0.015,
-        "outlscene_eul_jit": 0.002,
+        "outlscene_eul_jit": 0.001,
         "randomize_plane_height": True,
         "plane_height_jit": 0.002,
         "randomize_objpose": True,
@@ -87,11 +90,14 @@ def build_scene_kwargs() -> Dict[str, Any]:
         "cam_xyz_jit": 0.004,
         "cam_eul_jit": 0.002,
         "randomize_image_noise": True,
+        "randomize_object_color": True,
+        "object_color_mode": "bounded",
+        "object_color_strength": 1.0,
         "randomize_distractors": True,
         "distractor_root": "/mnt/storage/GoogleScannedObjects",
-        "distractor_num_range": (0, 4),
-        "distractor_target_size_range": (0.06, 0.3),
-        "distractor_workspace": ((0.05, 0.78), (-0.42, 0.42)),
+        "distractor_num_range": (0, 5),
+        "distractor_target_size_range": (0.06, 0.4),
+        "distractor_workspace": ((-0.2, 0.8), (-0.72, 0.42)),
         "distractor_min_target_mask_pixels": 10,
     }
 
@@ -128,7 +134,7 @@ def collect_one_episode(
         while not sim.done and sim_step < max_steps:
             should_record = sim_step % record_every_n_sim_steps == 0
             if should_record:
-                obs = sim.collect_observation(direct=True)
+                obs = sim.collect_observation(direct=False)
 
             sim.step()
 

@@ -2,3 +2,5 @@ from .lightingDR import LightingDR
 from .ImgNoiseDR import ImgNoiseDR
 from .distractorDR import DistractorDR
 from .poseDR import PoseDR
+from .ObjectColorDR import ObjectColorDR
+from .FPSAObjectDR import FPSAObjectDR

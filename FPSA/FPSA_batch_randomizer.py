@@ -19,10 +19,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import multiprocessing as mp
 import os
-import random
 import traceback
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -67,6 +65,59 @@ def dump_yaml_or_json(path: str | Path, data: Dict[str, Any]) -> None:
             path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     else:
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _first_present(data: Dict[str, Any], keys: Sequence[str], default: Any = None) -> Any:
+    for key in keys:
+        if key in data and data[key] is not None:
+            return data[key]
+    return default
+
+
+def _matrix4(data: Dict[str, Any], keys: Sequence[str]) -> Optional[np.ndarray]:
+    value = _first_present(data, keys)
+    if value is None:
+        return None
+
+    mat = np.asarray(value, dtype=np.float64)
+    if mat.shape != (4, 4):
+        raise ValueError(f"{keys[0]} must be a 4x4 matrix, got {mat.shape}")
+    return mat
+
+
+def write_grasp_yaml(path: str | Path, grasp_result: Dict[str, Any], mesh_path: str | Path) -> None:
+    """Write the transferred grasp in the format consumed by load_initial_grasp_pose()."""
+    if not isinstance(grasp_result, dict):
+        raise TypeError(f"grasp_result must be a dict, got {type(grasp_result).__name__}")
+
+    T_mesh_hand_tcp = _matrix4(grasp_result, ["T_mesh_hand_tcp"])
+    T_mesh_hand = _matrix4(grasp_result, ["T_mesh_hand"])
+
+    # The user's loader expects both keys to exist, but the FPSA transfer result may
+    # only return T_mesh_hand_tcp. Do not compute an extra transform here; just mirror
+    # the available 4x4 matrix so the YAML remains loadable by the existing reader.
+    if T_mesh_hand_tcp is None and T_mesh_hand is None:
+        raise KeyError("grasp_result is missing T_mesh_hand_tcp / T_mesh_hand")
+    if T_mesh_hand_tcp is None:
+        T_mesh_hand_tcp = T_mesh_hand
+    if T_mesh_hand is None:
+        T_mesh_hand = T_mesh_hand_tcp
+
+    opening = float(_first_present(grasp_result, ["opening_width_m", "opening"], 0.06))
+
+    record = {
+        "mesh_path": str(mesh_path),
+        "reference_frame": str(_first_present(grasp_result, ["reference_frame"], "mesh_local_frame")),
+        "hand_frame": str(_first_present(grasp_result, ["hand_frame"], "panda_hand")),
+        "opening_width_m": opening,
+        "pregrasp_opening_width_m": float(
+            _first_present(grasp_result, ["pregrasp_opening_width_m", "pregrasp_opening"], opening)
+        ),
+        "finger_joint_m": float(_first_present(grasp_result, ["finger_joint_m", "finger_joint"], opening / 2.0)),
+        "T_mesh_hand": T_mesh_hand,
+        "T_mesh_hand_tcp": T_mesh_hand_tcp,
+    }
+    dump_yaml_or_json(path, record)
 
 
 def to_builtin(x: Any) -> Any:
@@ -447,13 +498,13 @@ def _worker_generate_shape(job: Dict[str, Any]) -> Dict[str, Any]:
         if layout == "per_shape_dir":
             sample_dir = out_root / sample_name
             obj_out = sample_dir / f"{sample_name}.obj"
-            grasp_out = sample_dir / f"{sample_name}_grasp.npz"
+            grasp_out = sample_dir / f"{sample_name}_grasp.yaml"
             meta_out = sample_dir / f"{sample_name}_sample.yaml"
             debug_out = sample_dir / f"{sample_name}_debug.yaml"
         else:
             sample_dir = out_root
             obj_out = out_root / f"{sample_name}.obj"
-            grasp_out = out_root / f"{sample_name}_grasp.npz"
+            grasp_out = out_root / f"{sample_name}_grasp.yaml"
             meta_out = out_root / f"{sample_name}_sample.yaml"
             debug_out = out_root / f"{sample_name}_debug.yaml"
 
@@ -464,7 +515,6 @@ def _worker_generate_shape(job: Dict[str, Any]) -> Dict[str, Any]:
         augmentor = ShapeAugmentor(
             obj_path=obj_path,
             initial_grasp_path=initial_grasp_path,
-            auto_repair=auto_repair,
         )
 
         constraint_ids, target_positions = build_target_positions(augmentor, sampled_ops)
@@ -473,6 +523,8 @@ def _worker_generate_shape(job: Dict[str, Any]) -> Dict[str, Any]:
         # for composed labels, use global solver max_iters to keep behavior predictable.
         max_iters = int(solver_cfg.get("max_iters", 20))
         handle_error = bool(solver_cfg.get("handle_error_distrib_enabled", False))
+        visualize_grasp_transfer = bool(solver_cfg.get("visualize_grasp_transfer", False))
+
         if len(sampled_ops) == 1:
             label_name = sampled_ops[0]["label"]
             spec_dict = {d["label"]: d for d in meta.get("deformations", [])}[label_name]
@@ -499,7 +551,16 @@ def _worker_generate_shape(job: Dict[str, Any]) -> Dict[str, Any]:
                 quat_order=str(solver_cfg.get("quat_order", "xyzw")),
                 return_format=str(solver_cfg.get("return_format", "dict")),
             )
-            augmentor.write_transferred_grasp(grasp_out, grasp_result)
+            if visualize_grasp_transfer:
+                augmentor.visualize_deformed_grasp_pose(
+                            T_grasp_new=grasp_result,
+                            anchor=anchor,
+                            debug_info=grasp_debug,
+                            show_anchor=True,
+                            show_patch=True,
+                        )
+            
+            write_grasp_yaml(grasp_out, grasp_result, mesh_path=obj_out)
             grasp_written = True
         else:
             anchor = None

@@ -11,21 +11,24 @@ import math
 import time
 import numpy as np
 import cv2
-p.connect(p.DIRECT)
+p.connect(p.GUI)
 # p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP,1)
 p.setAdditionalSearchPath(pd.getDataPath())
 timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = PickUpSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 6486)
+Sim = PickUpSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 97)
 
 Sim.make_scene(
-    env_mesh_path= "./data/background/patched_table/tabletop.obj",
-    manipulated_obj_path= "./data/objects/banana/banana.obj",
-    initial_grasp_path= "./data/objects/banana/grasp.yaml",
+    env_mesh_path= "./data/background/repaired_table/tabletop.obj",
+    manipulated_obj_path= "./data/objects/bracket/bracket_texture/bracket.obj",
+    initial_grasp_path= "./data/objects/bracket/bracket_texture/bracket_grasp.yaml",
+    if_FPSA = True,
+    fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
+    fpsa_include_base = True,
     obj_pose_base = [0.55, 0.0, 0.1],
-    obj_euler_base = [math.pi/2, 0.0, math.pi/2],
+    obj_euler_base = [0.0, 0.0, 0.0],
     randomize_lighting= True,
     # outlier scene         
     randomize_outlscene  = True,
@@ -42,11 +45,14 @@ Sim.make_scene(
     cam_xyz_jit  = 0.004,
     cam_eul_jit  = 0.002,
     randomize_image_noise= True,
+    randomize_object_color = True,
+    object_color_mode = "bounded",  # "bounded" or "recolor"
+    object_color_strength = 1.0,
     randomize_distractors= True,
     distractor_root= "/mnt/storage/GoogleScannedObjects",
-    distractor_num_range= (0, 4),
+    distractor_num_range= (0, 5),
     distractor_target_size_range= (0.06, 0.3),
-    distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
+    distractor_workspace = ((-0.2, 0.8), (-0.72, 0.42)),
     # at least 10 pixel of the target object
     distractor_min_target_mask_pixels= 10,
     )

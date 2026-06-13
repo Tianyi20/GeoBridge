@@ -16,11 +16,11 @@ output:
 solver:
   max_iters: 20
   handle_error_distrib_enabled: false
-  k_ring: 2
+  k_ring: 1
   use_distance_weights: true
   quat_order: xyzw
   return_format: dict
-  visualize_grasp_transfer: false
+  visualize_grasp_transfer: true
 
 sampler:
   seed: 42
@@ -42,9 +42,11 @@ deformations:
     reshaped_ids: [378, 20]
     reshaped_vector: [1.0, 0.0, 0.0]
     range: [-0.02, 0.04]   # public FPSA displacement units; e.g. meters if your mesh uses meters
+    # coupled: 只从第一个 range 采样/取一次 magnitude，然后把这个同一个 magnitude 用到所有 reshaped_ids 上；
+    # 每个 vertex 再乘以自己对应的 reshaped_vector。
     coupled: true           # true: same sampled scalar for all reshaped_ids
     normalize_vector: true
-    distribution: uniform
+    distribution: uniform  # means uniform linspace grid, not random uniform
     weight: 1.0
 
   - label: bracket_x_shrink
@@ -73,4 +75,4 @@ deformations:
     coupled: false
     normalize_vector: true
     distribution: uniform
-    weight: 0.5
+    weight: 1.0

@@ -140,8 +140,8 @@ def collect_dataset_from_phydomain_parallel(
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/storage/DP_data/pickup/20260608_165847/episodes"
-    out_path = "./data/DP_data/6_8_direct_getImage/pickup.zarr"
+    data_root = "/mnt/storage/DP_data/pickup/20260613_221334/episodes"
+    out_path = "./data/DP_data/bracket_v1/pickup.zarr"
 
     buffer = collect_dataset_from_phydomain_parallel(
         data_root,

@@ -248,3 +248,21 @@ def visualize_debug(bullet_client, pos_to_visualize):
         baseVisualShapeIndex=visual_shape,
         basePosition=pos_to_visualize.tolist()
     )
+
+def inspect_obj_groups(path):
+    """
+    use to check if COACD file is valide for loading.
+    usage: inspect_obj_groups(self.convex_pick_up_obj_path)
+    """
+    n_o = 0
+    n_g = 0
+    with open(path, "r", errors="ignore") as f:
+        for line in f:
+            if line.startswith("o "):
+                n_o += 1
+            elif line.startswith("g "):
+                n_g += 1
+    print("OBJ:", path)
+    print("num object groups 'o':", n_o)
+    print("num group tags 'g':", n_g)
+

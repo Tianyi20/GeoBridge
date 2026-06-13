@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from scipy.spatial.transform import Rotation
 import numpy as np
+import coacd
+import trimesh
 
 def load_initial_grasp_pose(path: str):
     """
@@ -22,7 +24,7 @@ def load_initial_grasp_pose(path: str):
         T_mesh_hand_tcp: np.ndarray (4,4)
 
     优先级：
-      1. 若文件中有 T_mesh_hand，则直接使用它恢复 t 和 R
+      1. 若文件中有 T_mesh_hand ，则直接使用它恢复 t 和 R
       2. 否则使用 position_m + quaternion_xyzw
     """
     if not os.path.exists(path):
@@ -71,3 +73,31 @@ def load_initial_grasp_pose(path: str):
         "T_mesh_hand": T_mesh_hand,
         "T_mesh_hand_tcp": T_mesh_hand_tcp,
     }
+
+
+def coacd_convex_decomposition(obj_filename,threshold = 0.03, preprocess_resolution = 100):
+    """
+    COACD convex decomposition
+    """
+    output_file = os.path.splitext(obj_filename)[0] + "_coacd.obj"
+
+    if os.path.exists(output_file):
+        print(f"[COACD]: Convex decomposition mesh {output_file} exists")
+        return output_file
+    
+    mesh = trimesh.load(obj_filename, force="mesh")
+    mesh = coacd.Mesh(mesh.vertices, mesh.faces)
+    #result = coacd.run_coacd(mesh, threshold= 0.02, mcts_max_depth= 5, mcts_nodes= 30, preprocess_mode= "False") # a list of convex hulls.
+    result = coacd.run_coacd(mesh, threshold = threshold, preprocess_resolution =preprocess_resolution) # a list of convex hulls.
+
+    mesh_parts = []
+    for vs, fs in result:
+        mesh_parts.append(trimesh.Trimesh(vs, fs))
+    scene = trimesh.Scene()
+    np.random.seed(0)
+    for p in mesh_parts:
+        p.visual.vertex_colors[:, :3] = (np.random.rand(3) * 255).astype(np.uint8)
+        scene.add_geometry(p)
+    scene.export(output_file)
+
+    return output_file
