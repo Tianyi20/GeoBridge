@@ -15,7 +15,9 @@ class PickUpEnv(gym.Env):
     def __init__(self, sim_steps_per_action=1,
                  connection_mode = p.DIRECT,
                  seed=42,
+                 if_FPSA = True,
                  randomize_image_noise  = True,
+                 randomize_objcolor = True,
                  randomize_lighting = True,
                  randomize_objpose  = True,
                  randomize_distractors  = True,
@@ -24,7 +26,9 @@ class PickUpEnv(gym.Env):
                  randomize_campose = True,
         ):
         self._seed = seed
+        self.if_FPSA = if_FPSA
         self.randomize_image_noise = randomize_image_noise
+        self.randomize_objcolor = randomize_objcolor
         self.randomize_lighting = randomize_lighting
         self.randomize_objpose = randomize_objpose
         self.randomize_distractors = randomize_distractors
@@ -85,12 +89,15 @@ class PickUpEnv(gym.Env):
         self.sim.enable_high_quality_rendering()
 
         self.sim.make_scene(
-                env_mesh_path= "./data/background/patched_table/tabletop.obj",
-                manipulated_obj_path= "./data/objects/banana/banana.obj",
-                initial_grasp_path= "./data/objects/banana/grasp.yaml",
+                env_mesh_path= "./data/background/repaired_table/tabletop.obj",
+                manipulated_obj_path= "./data/objects/bracket/bracket_texture/bracket.obj",
+                initial_grasp_path= "./data/objects/bracket/bracket_texture/bracket_grasp.yaml",
+                if_FPSA= self.if_FPSA,
+                fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
+                fpsa_include_base = True,                
                 obj_pose_base = [0.55, 0.0, 0.1],
-                obj_euler_base = [math.pi/2, 0.0, math.pi/2],
-                randomize_lighting= self.randomize_image_noise,
+                obj_euler_base = [0.0, 0.0, 0.0],
+                randomize_lighting = self.randomize_image_noise,
                 # outlier scene         
                 randomize_outlscene  = self.randomize_outlscene,
                 outlscene_xyz_jit    = 0.015,
@@ -106,11 +113,14 @@ class PickUpEnv(gym.Env):
                 cam_xyz_jit  = 0.004,
                 cam_eul_jit  = 0.002,
                 randomize_image_noise= self.randomize_image_noise,
+                randomize_object_color = self.randomize_objcolor,
+                object_color_mode = "bounded",  # "bounded" or "recolor"
+                object_color_strength = 1.0,
                 randomize_distractors= self.randomize_distractors,
                 distractor_root= "/mnt/storage/GoogleScannedObjects",
-                distractor_num_range= (0, 4),
-                distractor_target_size_range= (0.06, 0.3),
-                distractor_workspace = ((0.05, 0.78), (-0.42, 0.42)),
+                distractor_num_range= (0, 5),
+                distractor_target_size_range= (0.06, 0.4),
+                distractor_workspace = ((-0.2, 0.8), (-0.72, 0.42)),
                 # at least 10 pixel of the target object
                 distractor_min_target_mask_pixels= 10,
                 )
