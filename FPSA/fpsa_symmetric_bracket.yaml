@@ -7,7 +7,7 @@ object:
   auto_repair: false
 
 output:
-  root: /home/iadc/GeoBridge/data/objects/bracket/fpsa_aug_outputs
+  root: /home/iadc/GeoBridge/data/objects/bracket/fpsa_symmetric_aug
   layout: flat          # flat | per_shape_dir
   overwrite: false
   save_grasp: true
@@ -24,10 +24,10 @@ solver:
 
 sampler:
   seed: 42
-  n_shapes: 800
+  n_shapes: 5
   max_workers: 20
   mp_start_method: spawn
-  labels: [bracket_x_stretch, bracket_y_stretch, bracket_symetric_stretch_annot]
+  labels: [bracket_symetric_stretch_annot]
   label_mode: balanced  # balanced | random_one | random_k | all
   labels_per_shape: 1 # Used only by label-mode=random_k
 

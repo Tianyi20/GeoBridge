@@ -50,7 +50,7 @@ jointPositions = [
 rp = jointPositions
 
 
-class PickUpSim(object):
+class WrenchSim(object):
     def __init__(self, bullet_client, offset, 
                  control_dt = 1.0 / 120.0, seed = 42):
         self.bullet_client = bullet_client
@@ -190,9 +190,92 @@ class PickUpSim(object):
 
         self.prepare_state(self.state)
 
+    def load_wrench_tool(self):
+        """Load wrench mesh as a separate PyBullet body and fix it to the robot EE link."""
+        p = self.bullet_client
+
+        # 推荐 collision 用 COACD/VHACD 后的 convex mesh
+        wrench_collision_path = coacd_convex_decomposition(self.wrench_mesh_path)
+
+        visual_shape = p.createVisualShape(
+            shapeType=p.GEOM_MESH,
+            fileName=self.wrench_mesh_path,
+            meshScale=[1.0, 1.0, 1.0],
+            rgbaColor=[0.8, 0.8, 0.8, 1.0],
+        )
+
+        collision_shape = p.createCollisionShape(
+            shapeType=p.GEOM_MESH,
+            fileName=wrench_collision_path,
+            meshScale=[1.0, 1.0, 1.0],
+        )
+
+        parent_state = p.getLinkState(
+            self.panda,
+            self.tool_parent_link,
+            computeForwardKinematics=True,
+        )
+        parent_pos = np.array(parent_state[4], dtype=float)
+        parent_orn = np.array(parent_state[5], dtype=float)
+
+        wrench_pos, wrench_orn = p.multiplyTransforms(
+            parent_pos.tolist(),
+            parent_orn.tolist(),
+            self.parent_to_wrench_pos.tolist(),
+            self.parent_to_wrench_orn.tolist(),
+        )
+
+        self.wrench_body_id = p.createMultiBody(
+            baseMass=0.02,
+            baseCollisionShapeIndex=collision_shape,
+            baseVisualShapeIndex=visual_shape,
+            basePosition=wrench_pos,
+            baseOrientation=wrench_orn,
+        )
+
+        p.changeDynamics(
+            self.wrench_body_id,
+            -1,
+            lateralFriction=1.0,
+            spinningFriction=0.01,
+            rollingFriction=0.01,
+        )
+
+        self.wrench_constraint_id = p.createConstraint(
+            parentBodyUniqueId=self.panda,
+            parentLinkIndex=self.tool_parent_link,
+            childBodyUniqueId=self.wrench_body_id,
+            childLinkIndex=-1,
+            jointType=p.JOINT_FIXED,
+            jointAxis=[0, 0, 0],
+            parentFramePosition=self.parent_to_wrench_pos.tolist(),
+            parentFrameOrientation=self.parent_to_wrench_orn.tolist(),
+            childFramePosition=[0, 0, 0],
+            childFrameOrientation=[0, 0, 0, 1],
+        )
+
+        p.changeConstraint(
+            self.wrench_constraint_id,
+            maxForce=1000,
+            erp=0.9,
+        )
+
+        # 关掉 wrench 和 robot 自身碰撞，避免工具和手爪/手腕打架
+        for link_idx in range(-1, p.getNumJoints(self.panda)):
+            p.setCollisionFilterPair(
+                self.panda,
+                self.wrench_body_id,
+                link_idx,
+                -1,
+                enableCollision=0,
+            )
+        # set gripper width
+        self.set_gripper(0.0125)
+            
     def make_scene(self, 
                    env_mesh_path        = None,
                    manipulated_obj_path = None,
+                   clipper_obj_path     = None,
                    initial_grasp_path = None,
                    if_FPSA = False,
                    fpsa_aug_root = "~/GeoBridge/data/objects/bracket/fpsa_aug_outputs",
@@ -233,21 +316,40 @@ class PickUpSim(object):
                    ):
         
         ## TODO: visual things to be randomized:
-        # 1. random number and shape of distractors (no need accurate convex decomposition)
-        # 2. slight disturbance of the object texture, ground texture
-        # 3. objects pose and z axis orientation 
-        # 4. number of lights in the scene
-        # 5. position, orientation, specular characteristics of the lights
-        # 6. types and amount of random noise added to the images 
-        # TODO: advanced visual randomization:
-        # 7. outlier scene pose randomization
-        # 8. plane height
-        # 9. camera pose and orn
+        # task wrench engagement
+        # 1. wrench tool assembling
+
 
         # always enable high quality rendering pipeline and shadows
 
         """ ################ Load basic scene assets ################ """
         # Avoid mutating caller-provided lists/default arguments when pose randomization is enabled.
+        self.use_wrench_tcp = True
+        self.wrench_body_id = None
+        self.wrench_constraint_id = None
+
+        # wrench mesh
+        self.wrench_mesh_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_repaired.obj"
+
+        # 工具固定在哪个 robot link 上
+        # 先用你当前的 EE link；如果发现不对，再换成 panda_hand 的 index，比如 8
+        self.tool_parent_link = pandaEndEffectorIndex
+
+        # parent link frame -> wrench mesh origin
+        # 这个需要你根据 mesh 在 Blender / MeshLab / SolidWorks 里调
+        self.parent_to_wrench_pos = np.array([0.0, 0.0, 0.0], dtype=float)
+        self.parent_to_wrench_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+
+        # parent link frame -> wrench TCP
+        # 这个才是以后 policy/action/observation 用的 TCP
+        # here our base TCP relative to mesh origin is 0.16417
+        self.parent_to_tcp_pos = np.array([0.16417, 0.0, 0.0], dtype=float)
+        self.parent_to_tcp_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+
+        # load wrench tool
+        self.load_wrench_tool()
+
+
         obj_pose_base = np.array(obj_pose_base, dtype=float).copy()
         obj_euler_base = np.array(obj_euler_base, dtype=float).copy()
 
@@ -263,10 +365,13 @@ class PickUpSim(object):
             self.fpsa_object_sample = None
 
         self.env_mesh_path = env_mesh_path
-        self.pick_up_obj_path = manipulated_obj_path
+        self.screw_obj_path = manipulated_obj_path
+        self.clipper_obj_path = clipper_obj_path
+        ic(self.clipper_obj_path)
+        self.convex_clipper_path = coacd_convex_decomposition(self.clipper_obj_path) 
         self.initial_grasp_path = initial_grasp_path
-        self.convex_pick_up_obj_path = coacd_convex_decomposition(self.pick_up_obj_path)
-        self.com_pick_up_obj = get_com(self.pick_up_obj_path)
+        self.convex_screw_obj_path = coacd_convex_decomposition(self.screw_obj_path)
+        self.com_screw = get_com(self.screw_obj_path)
 
         """ ################ Basic Visual Randomization ############### """
         if randomize_lighting:
@@ -365,17 +470,33 @@ class PickUpSim(object):
             visual_only=True,
         )
 
-        self.pick_up_obj_id = load_models(
+        self.screw_obj_id = load_models(
             self.bullet_client,
-            visual_mesh_file=self.pick_up_obj_path,
-            vhacd_mesh_file=self.convex_pick_up_obj_path,
-            desired_mass=0.5,
+            visual_mesh_file=self.screw_obj_path,
+            vhacd_mesh_file=self.convex_screw_obj_path,
+            desired_mass=0.2,
             position= objPose,
             baseOrientation= objOrn,
-            center_of_mass=np.array(self.com_pick_up_obj),
-            lateral_friction=0.6,
+            center_of_mass=np.array(self.com_screw),
+            lateral_friction=0.1,
+            spinning_friction= 0.0,
         )
 
+        # Load the clipper that support screw
+        # The position relative to screw position should be fixed
+        self.clipper_id = load_models(
+            self.bullet_client,
+            visual_mesh_file=self.clipper_obj_path,
+            vhacd_mesh_file=self.convex_clipper_path,
+            desired_mass=0.0, # static obj with mass = 0.0
+            position= objPose + np.array([0.0, 0.0, -0.011]),
+            baseOrientation= np.array([0.0, 0.0, 0.7071067811865475, 0.7071067811865476]),
+            center_of_mass=np.array(self.com_screw),
+            lateral_friction=0.1,
+            spinning_friction= 0.0,
+        )
+
+        # time.sleep(1.0)
         # Object-level color / material domain randomization.
         # This is applied after the target object has been loaded into PyBullet.
         # It reads the current visual rgbaColor as the original/base color, then
@@ -384,7 +505,7 @@ class PickUpSim(object):
         # top of the existing visual material, so texture details can remain.
         if randomize_object_color:
             self.object_color_cfg = self.objectColorDR.sample_and_apply_object_color_randomization(
-                body_id=self.pick_up_obj_id,
+                body_id=self.screw_obj_id,
                 mode=object_color_mode,
                 strength=object_color_strength,
                 recolor_palette=object_recolor_palette,
@@ -412,7 +533,7 @@ class PickUpSim(object):
                 clearance=distractor_clearance,
                 path_clearance=distractor_path_clearance,
                 min_target_mask_pixels=distractor_min_target_mask_pixels,
-                target_body_id=self.pick_up_obj_id,
+                target_body_id=self.screw_obj_id,
                 robot_body_id=self.panda,
                 robot_base_offset=self.offset,
                 planned_waypoints=self.get_state_machine_ee_waypoints(),
@@ -444,7 +565,7 @@ class PickUpSim(object):
             self.bullet_client.stepSimulation()
 
         obj_pos, obj_orn = get_true_PositionAndOrientation(
-            self.bullet_client, self.pick_up_obj_id
+            self.bullet_client, self.screw_obj_id
         )
         self.initial_obj_pos = np.array(obj_pos, dtype=float)
         self.initial_obj_orn = np.array(obj_orn, dtype=float)
@@ -471,7 +592,7 @@ class PickUpSim(object):
         while steps < waite_steps:
             self.bullet_client.stepSimulation()
             steps += 1
-            vel1, ang_vel1 = self.bullet_client.getBaseVelocity(self.pick_up_obj_id)
+            vel1, ang_vel1 = self.bullet_client.getBaseVelocity(self.screw_obj_id)
 
             speed1 = np.linalg.norm(vel1) + np.linalg.norm(ang_vel1)
 
@@ -544,7 +665,7 @@ class PickUpSim(object):
     def get_initial_guess_grasp(self):
         mesh_world_pos, mesh_world_orn = get_true_PositionAndOrientation(
             self.bullet_client,
-            self.pick_up_obj_id,
+            self.screw_obj_id,
         )
 
         grasp_pose, raw_grasp_orn = self.bullet_client.multiplyTransforms(
@@ -561,11 +682,27 @@ class PickUpSim(object):
         return np.array(grasp_pose, dtype=float), np.array(grasp_orn, dtype=float)
     
     def get_ee_pose(self):
-        link_state = self.bullet_client.getLinkState(
-            self.panda, pandaEndEffectorIndex, computeForwardKinematics=True
+        p = self.bullet_client
+
+        link_state = p.getLinkState(
+            self.panda,
+            self.tool_parent_link if getattr(self, "use_wrench_tcp", False) else pandaEndEffectorIndex,
+            computeForwardKinematics=True,
         )
-        return np.array(link_state[4], dtype=float), np.array(link_state[5], dtype=float)
-    
+
+        parent_pos = np.array(link_state[4], dtype=float)
+        parent_orn = np.array(link_state[5], dtype=float)
+
+        if getattr(self, "use_wrench_tcp", False):
+            tcp_pos, tcp_orn = p.multiplyTransforms(
+                parent_pos.tolist(),
+                parent_orn.tolist(),
+                self.parent_to_tcp_pos.tolist(),
+                self.parent_to_tcp_orn.tolist(),
+            )
+            return np.array(tcp_pos, dtype=float), np.array(tcp_orn, dtype=float)
+
+        return parent_pos, parent_orn
 
     def gripper_state_to_width(self, state):
         """Map binary gripper state to simulated Panda finger width."""
@@ -607,21 +744,47 @@ class PickUpSim(object):
             self.set_gripper_width(command)
 
     def solve_ik_and_apply(self, target_pos, target_orn):
+        p = self.bullet_client
         current_q = self.get_current_arm_joints()
 
-        jointPoses = self.bullet_client.calculateInverseKinematics(
+        ik_target_pos = np.array(target_pos, dtype=float)
+        ik_target_orn = np.array(target_orn, dtype=float)
+        ik_link_index = pandaEndEffectorIndex
+
+        if getattr(self, "use_wrench_tcp", False):
+            # target_pos/target_orn 是 desired wrench TCP pose
+            # parent_to_tcp 是 parent link -> wrench TCP
+            # 所以 desired parent pose = desired TCP pose * inverse(parent_to_tcp)
+            inv_tcp_pos, inv_tcp_orn = p.invertTransform(
+                self.parent_to_tcp_pos.tolist(),
+                self.parent_to_tcp_orn.tolist(),
+            )
+
+            ik_target_pos, ik_target_orn = p.multiplyTransforms(
+                target_pos.tolist(),
+                target_orn.tolist(),
+                inv_tcp_pos,
+                inv_tcp_orn,
+            )
+
+            ik_target_pos = np.array(ik_target_pos, dtype=float)
+            ik_target_orn = np.array(ik_target_orn, dtype=float)
+            ik_link_index = self.tool_parent_link
+
+        jointPoses = p.calculateInverseKinematics(
             self.panda,
-            pandaEndEffectorIndex,
-            target_pos.tolist(),
-            target_orn.tolist(),
+            ik_link_index,
+            ik_target_pos.tolist(),
+            ik_target_orn.tolist(),
             ll, ul, jr, current_q,
             maxNumIterations=50,
         )
+
         for i in range(pandaNumDofs):
-            self.bullet_client.setJointMotorControl2(
+            p.setJointMotorControl2(
                 self.panda,
                 i,
-                self.bullet_client.POSITION_CONTROL,
+                p.POSITION_CONTROL,
                 targetPosition=jointPoses[i],
                 force=self.arm_force,
             )
@@ -915,11 +1078,11 @@ class PickUpSim(object):
     
 
     def is_success(self, lift_height_threshold=0.08, require_contact=True):
-        if not hasattr(self, "pick_up_obj_id"):
+        if not hasattr(self, "screw_obj_id"):
             return False
 
         obj_pos, _ = get_true_PositionAndOrientation(
-            self.bullet_client, self.pick_up_obj_id
+            self.bullet_client, self.screw_obj_id
         )
         obj_pos = np.array(obj_pos, dtype=float)
 
@@ -933,7 +1096,7 @@ class PickUpSim(object):
 
         contacts = self.bullet_client.getContactPoints(
             bodyA=self.panda,
-            bodyB=self.pick_up_obj_id,
+            bodyB=self.screw_obj_id,
         )
         grasped = len(contacts) > 0
 

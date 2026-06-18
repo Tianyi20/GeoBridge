@@ -63,7 +63,7 @@ class CollectorConfig:
 
 def default_base_dir() -> Path:
     run_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("/mnt/storage/DP_data/pickup") / run_time / "episodes"
+    return Path("/mnt/storage/DP_data/fpsa_bracket") / run_time / "episodes"
 
 
 def build_scene_kwargs() -> Dict[str, Any]:

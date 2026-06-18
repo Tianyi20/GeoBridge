@@ -1,4 +1,4 @@
-from PickUpSim import PickUpSim
+from WrenchSim import WrenchSim
 import pybullet as p
 import os
 from episode_writer import EpisodeWriter
@@ -18,16 +18,17 @@ timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = PickUpSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 97)
+Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 97)
 
 Sim.make_scene(
     env_mesh_path= "./data/background/repaired_table/tabletop.obj",
-    manipulated_obj_path= "./data/objects/bracket/bracket_texture/bracket.obj",
-    initial_grasp_path= "./data/objects/bracket/bracket_texture/bracket_grasp.yaml",
-    if_FPSA = True,
+    manipulated_obj_path= "./data/objects/screw/screw.obj",
+    clipper_obj_path   = "data/objects/clipper/clipper.obj",
+    initial_grasp_path = "data/objects/wrench/wrench_engage.yaml",
+    if_FPSA = False,
     fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
     fpsa_include_base = True,
-    obj_pose_base = [0.55, 0.0, 0.1],
+    obj_pose_base = [0.7, -0.05, 0.25],
     obj_euler_base = [0.0, 0.0, 0.0],
     randomize_lighting= True,
     # outlier scene         
@@ -37,7 +38,7 @@ Sim.make_scene(
     # plane height randomization
     randomize_plane_height = True,
     plane_height_jit = 0.002,
-    randomize_objpose  = True,
+    randomize_objpose  = False,
     obj_x_jit    = 0.15,
     obj_y_jit    = 0.2,
     obj_z_eul_jit = np.pi,
@@ -63,6 +64,9 @@ sim_step = 0
 timestamp = 0.0
 record_idx = 0
 record_every_n_sim_steps = 12
+
+# while True:
+#     p.stepSimulation()
 try:
     while (not Sim.done):
         p.stepSimulation()

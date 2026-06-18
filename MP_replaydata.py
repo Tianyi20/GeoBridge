@@ -140,8 +140,8 @@ def collect_dataset_from_phydomain_parallel(
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/storage/DP_data/pickup/20260613_221334/episodes"
-    out_path = "./data/DP_data/bracket_v1/pickup.zarr"
+    data_root = "/mnt/storage/DP_data/fpsa_bracket/20260614_190814/episodes"
+    out_path = "./data/DP_data/bracket_v2/pickup.zarr"
 
     buffer = collect_dataset_from_phydomain_parallel(
         data_root,
@@ -153,7 +153,7 @@ if __name__ == "__main__":
 
     print("done")
 
-    buffer = ReplayBuffer.copy_from_path(out_path)
+    buffer = ReplayBuffer.create_from_path(out_path, mode="r")
     print(buffer.meta)
     print(buffer.data.keys())
-    action = buffer["action"]
+    print(buffer["action"].shape, buffer["action"].dtype)
