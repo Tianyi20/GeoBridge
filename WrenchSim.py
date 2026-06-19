@@ -21,7 +21,8 @@ from utility import (
     load_initial_grasp_pose, 
     resize_rgb, 
     normalize_vector, 
-    quat_from_rotation_matrix
+    quat_from_rotation_matrix,
+    shrink_mesh,
     ) 
 
 from icecream import ic
@@ -158,16 +159,18 @@ class WrenchSim(object):
         self.home_ee_pos = np.array(self.home_ee_pos, dtype=float)
         self.home_ee_orn = np.array(self.home_ee_orn, dtype=float)
 
-        #########========= pick up状态机 =========###################
+        #########========= wrench screw engagement / fastening 状态机 =========###################
         self.states = [
             "home",
-            "move_pregrasp",
-            "open_gripper",
-            "move_grasp",
-            "close_gripper",
-            "lift_object",
+            "move_preEngage",
+            "move_Engage",
+            "fasten_screw",
         ]
-        self.state_durations = [0.01, 5.0, 0.25, 2.0, 0.5, 2.0]
+        self.state_durations = [0.01, 5.0, 2.0, 2.0]
+
+        # fasten_screw: keep current wrench TCP position fixed and rotate
+        # the TCP frame about its own local +Z axis by this angle.
+        self.fasten_angle_rad = math.radians(50.0)
         self.state_idx = 0
         self.state = self.states[self.state_idx]
         self.state_t = 0.0
@@ -195,7 +198,8 @@ class WrenchSim(object):
         p = self.bullet_client
 
         # 推荐 collision 用 COACD/VHACD 后的 convex mesh
-        wrench_collision_path = coacd_convex_decomposition(self.wrench_mesh_path)
+        self.wrench_collision_asset = shrink_mesh(self.wrench_mesh_path, shrink_mode= "by_margin", margin_m=0.005, shrink_center="centroid",)
+        wrench_collision_path = coacd_convex_decomposition(self.wrench_collision_asset)
 
         visual_shape = p.createVisualShape(
             shapeType=p.GEOM_MESH,
@@ -226,7 +230,7 @@ class WrenchSim(object):
         )
 
         self.wrench_body_id = p.createMultiBody(
-            baseMass=0.02,
+            baseMass=0.3,
             baseCollisionShapeIndex=collision_shape,
             baseVisualShapeIndex=visual_shape,
             basePosition=wrench_pos,
@@ -236,9 +240,9 @@ class WrenchSim(object):
         p.changeDynamics(
             self.wrench_body_id,
             -1,
-            lateralFriction=1.0,
-            spinningFriction=0.01,
-            rollingFriction=0.01,
+            lateralFriction=0.7,
+            spinningFriction=0.00,
+            rollingFriction=0.005,
         )
 
         self.wrench_constraint_id = p.createConstraint(
@@ -275,6 +279,7 @@ class WrenchSim(object):
     def make_scene(self, 
                    env_mesh_path        = None,
                    manipulated_obj_path = None,
+                   manipulated_obj_collision_path = None,
                    clipper_obj_path     = None,
                    initial_grasp_path = None,
                    if_FPSA = False,
@@ -349,6 +354,14 @@ class WrenchSim(object):
         # load wrench tool
         self.load_wrench_tool()
 
+        # After enabling the wrench TCP, refresh the home pose so all state-machine
+        # targets are expressed in the same TCP frame used by get_ee_pose() and
+        # solve_ik_and_apply().
+        self.home_ee_pos, self.home_ee_orn = self.get_ee_pose()
+        self.home_ee_pos = np.array(self.home_ee_pos, dtype=float)
+        self.home_ee_orn = np.array(self.home_ee_orn, dtype=float)
+        if self.state == "home":
+            self.prepare_state(self.state)
 
         obj_pose_base = np.array(obj_pose_base, dtype=float).copy()
         obj_euler_base = np.array(obj_euler_base, dtype=float).copy()
@@ -367,11 +380,15 @@ class WrenchSim(object):
         self.env_mesh_path = env_mesh_path
         self.screw_obj_path = manipulated_obj_path
         self.clipper_obj_path = clipper_obj_path
-        ic(self.clipper_obj_path)
+        self.screw_collision_asset = manipulated_obj_collision_path
+
         self.convex_clipper_path = coacd_convex_decomposition(self.clipper_obj_path) 
-        self.initial_grasp_path = initial_grasp_path
-        self.convex_screw_obj_path = coacd_convex_decomposition(self.screw_obj_path)
+        self.screw_collision_path = shrink_mesh(self.screw_collision_asset, shrink_mode= "by_margin", margin_m=0.003, shrink_center="centroid",)
+        self.convex_screw_obj_path = coacd_convex_decomposition(self.screw_collision_path)
         self.com_screw = get_com(self.screw_obj_path)
+
+        self.initial_grasp_path = initial_grasp_path
+
 
         """ ################ Basic Visual Randomization ############### """
         if randomize_lighting:
@@ -474,12 +491,12 @@ class WrenchSim(object):
             self.bullet_client,
             visual_mesh_file=self.screw_obj_path,
             vhacd_mesh_file=self.convex_screw_obj_path,
-            desired_mass=0.2,
+            desired_mass=0.1,
             position= objPose,
             baseOrientation= objOrn,
             center_of_mass=np.array(self.com_screw),
-            lateral_friction=0.1,
-            spinning_friction= 0.0,
+            lateral_friction=0.05,
+            spinning_friction= 0.00,
         )
 
         # Load the clipper that support screw
@@ -571,20 +588,22 @@ class WrenchSim(object):
         self.initial_obj_orn = np.array(obj_orn, dtype=float)
 
     def get_state_machine_ee_waypoints(self):
-        """Approximate the EE path used by the pick-up state machine."""
-        grasp_pos, grasp_orn = self.get_initial_guess_grasp()
+        """Approximate the wrench TCP path used by the screw-engagement state machine."""
+        engage_pos, engage_orn = self.get_initial_guess_grasp()
 
-        pregrasp_pos = grasp_pos.copy()
-        pregrasp_pos[2] += self.safe_approach
+        preengage_pos = engage_pos.copy()
+        preengage_pos[2] += self.safe_approach
 
-        lift_pos = grasp_pos.copy()
-        lift_pos[2] += 0.2
+        fasten_orn = self.rotate_quat_about_local_z(
+            engage_orn,
+            self.fasten_angle_rad,
+        )
 
         return [
             (self.home_ee_pos.copy(), self.home_ee_orn.copy()),
-            (pregrasp_pos, grasp_orn.copy()),
-            (grasp_pos.copy(), grasp_orn.copy()),
-            (lift_pos, grasp_orn.copy()),
+            (preengage_pos, engage_orn.copy()),
+            (engage_pos.copy(), engage_orn.copy()),
+            (engage_pos.copy(), fasten_orn.copy()),
         ]
 
     def waite_scene_stable(self, waite_steps=1000, vel_threshold=0.005):       
@@ -805,6 +824,25 @@ class WrenchSim(object):
             q.append(js[0])
         return q
 
+    def rotate_quat_about_local_z(self, quat_xyzw, angle_rad):
+        """Rotate a TCP orientation about its own local +Z axis.
+
+        PyBullet and scipy both use quaternion order [x, y, z, w].
+        Multiplying current_rot * delta_z means the delta is applied in the
+        current TCP local frame, so the world-space rotation axis is the
+        current TCP z-axis.
+        """
+        quat_xyzw = np.asarray(quat_xyzw, dtype=float)
+        quat_norm = np.linalg.norm(quat_xyzw)
+        if quat_norm < 1e-12:
+            raise ValueError("Invalid zero-norm quaternion for fasten_screw.")
+        quat_xyzw = quat_xyzw / quat_norm
+
+        current_rot = R.from_quat(quat_xyzw)
+        delta_rot = R.from_rotvec(np.array([0.0, 0.0, angle_rad], dtype=float))
+        target_quat = (current_rot * delta_rot).as_quat()
+        target_quat = target_quat / np.linalg.norm(target_quat)
+        return target_quat.astype(float)
 
     def prepare_state(self, state):
         ee_pos, ee_orn = self.get_ee_pose()
@@ -814,40 +852,48 @@ class WrenchSim(object):
         self.motion_target_pos = ee_pos.copy()
         self.motion_target_orn = ee_orn.copy()
 
+        # Wrench is fixed to the robot, so gripper command is only kept for
+        # action/observation compatibility with the previous pick-up pipeline.
+        if self.target_gripper is None:
+            self.target_gripper = self.GRIPPER_OPEN
+
         if state == "home":
             self.motion_target_pos = self.home_ee_pos.copy()
             self.motion_target_orn = self.home_ee_orn.copy()
             self.target_gripper = self.GRIPPER_OPEN
             self.set_gripper_state(self.target_gripper)
 
-        elif state == "move_pregrasp":
-            # 简单 pick-up：从物体上方接近，不再根据 mug tree / rack 计算侧向 approach。
-            grasp_pos, grasp_orn = self.get_initial_guess_grasp()
+        elif state == "move_preEngage":
+            # Same motion logic as the previous move_pregrasp state:
+            # move to a safe pose above the annotated engage pose.
+            engage_pos, engage_orn = self.get_initial_guess_grasp()
 
-            pregrasp_pos = grasp_pos.copy()
-            pregrasp_pos[2] += self.safe_approach
+            preengage_pos = engage_pos.copy()
+            preengage_pos[0] -= self.safe_approach
 
-            self.motion_target_pos = pregrasp_pos
-            self.motion_target_orn = grasp_orn.copy()
+            self.motion_target_pos = preengage_pos
+            self.motion_target_orn = engage_orn.copy()
 
-        elif state == "open_gripper":
-            self.target_gripper = self.GRIPPER_OPEN
+        elif state == "move_Engage":
+            # Same motion logic as the previous move_grasp state:
+            # move the wrench TCP to the annotated screw engagement pose.
+            engage_pos, engage_orn = self.get_initial_guess_grasp()
+            self.last_grasp_pose = engage_pos.copy()
+            self.last_grasp_orn = engage_orn.copy()
 
-        elif state == "move_grasp":
-            grasp_pos, grasp_orn = self.get_initial_guess_grasp()
-            self.last_grasp_pose = grasp_pos.copy()
-            self.last_grasp_orn = grasp_orn.copy()
+            self.motion_target_pos = engage_pos.copy()
+            self.motion_target_orn = engage_orn.copy()
 
-            self.motion_target_pos = grasp_pos.copy()
-            self.motion_target_orn = grasp_orn.copy()
-
-        elif state == "close_gripper":
-            self.target_gripper = self.GRIPPER_CLOSED
-
-        elif state == "lift_object":
-            # 闭爪后直接沿 world z 方向抬起物体，完成简单 pick-up。
-            self.motion_target_pos = ee_pos.copy() + np.array([0.0, 0.0, 0.15], dtype=float)
-            self.motion_target_orn = ee_orn.copy()
+        elif state == "fasten_screw":
+            # Keep the current wrench TCP origin fixed and rotate the TCP frame
+            # about its current local +Z axis. Since get_ee_pose() returns the
+            # wrench TCP pose and solve_ik_and_apply() expects a desired TCP pose,
+            # no extra parent/wrench offset compensation is needed here.
+            self.motion_target_pos = ee_pos.copy()
+            self.motion_target_orn = self.rotate_quat_about_local_z(
+                ee_orn,
+                self.fasten_angle_rad,
+            )
 
     def switch_to_next_state(self):
         self.state_idx += 1
@@ -867,14 +913,7 @@ class WrenchSim(object):
         duration = self.state_durations[self.state_idx]
         s = min(self.state_t / duration, 1.0)
 
-        if self.state in ["open_gripper", "close_gripper"]:
-            self.set_gripper_state(self.target_gripper)
-
-            ee_pos, ee_orn = self.get_ee_pose()
-            self.target_pos = ee_pos.copy()
-            self.target_orn = ee_orn.copy()
-
-        elif self.state in ["home", "move_pregrasp", "move_grasp", "lift_object"]:
+        if self.state in ["home", "move_preEngage", "move_Engage", "fasten_screw"]:
             self.target_pos = (1.0 - s) * self.motion_start_pos + s * self.motion_target_pos
             self.target_orn = quat_slerp(self.motion_start_orn, self.motion_target_orn, s)
             self.solve_ik_and_apply(self.target_pos, self.target_orn)

@@ -23,6 +23,7 @@ Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 97)
 Sim.make_scene(
     env_mesh_path= "./data/background/repaired_table/tabletop.obj",
     manipulated_obj_path= "./data/objects/screw/screw.obj",
+    manipulated_obj_collision_path = "./data/objects/screw/screw_collision_asset.obj",
     clipper_obj_path   = "data/objects/clipper/clipper.obj",
     initial_grasp_path = "data/objects/wrench/wrench_engage.yaml",
     if_FPSA = False,
