@@ -495,7 +495,7 @@ class WrenchSim(object):
             position= objPose,
             baseOrientation= objOrn,
             center_of_mass=np.array(self.com_screw),
-            lateral_friction=0.05,
+            lateral_friction=0.09,
             spinning_friction= 0.00,
         )
 
@@ -621,8 +621,6 @@ class WrenchSim(object):
 
         print("Warning: Scene did not stabilize within timeout.")
         return False
-
-
 
     def get_fixed_normal_grasp_orn(self, raw_grasp_orn=None):
         """Fix only the grasp positive normal direction in world frame.
