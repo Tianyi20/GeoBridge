@@ -170,7 +170,7 @@ class WrenchSim(object):
 
         # fasten_screw: keep current wrench TCP position fixed and rotate
         # the TCP frame about its own local +Z axis by this angle.
-        self.fasten_angle_rad = math.radians(50.0)
+        self.fasten_angle_rad = math.radians(70.0)
         self.state_idx = 0
         self.state = self.states[self.state_idx]
         self.state_t = 0.0
@@ -197,8 +197,12 @@ class WrenchSim(object):
         """Load wrench mesh as a separate PyBullet body and fix it to the robot EE link."""
         p = self.bullet_client
 
-        # 推荐 collision 用 COACD/VHACD 后的 convex mesh
-        self.wrench_collision_asset = shrink_mesh(self.wrench_mesh_path, shrink_mode= "by_margin", margin_m=0.005, shrink_center="centroid",)
+        self.wrench_collision_asset = shrink_mesh(
+            self.wrench_mesh_path,
+            shrink_mode="by_margin",
+            margin_m=0.005,
+            shrink_center="centroid",
+        )
         wrench_collision_path = coacd_convex_decomposition(self.wrench_collision_asset)
 
         visual_shape = p.createVisualShape(
@@ -298,6 +302,7 @@ class WrenchSim(object):
                    randomize_objpose  = True,
                    obj_x_jit    = 0.2,
                    obj_y_jit    = 0.2,
+                   obj_z_jit    = 0.1,
                    obj_z_eul_jit = np.pi,
                    randomize_campose = True,
                    cam_xyz_jit  = 0.004,
@@ -382,13 +387,17 @@ class WrenchSim(object):
         self.clipper_obj_path = clipper_obj_path
         self.screw_collision_asset = manipulated_obj_collision_path
 
-        self.convex_clipper_path = coacd_convex_decomposition(self.clipper_obj_path) 
-        self.screw_collision_path = shrink_mesh(self.screw_collision_asset, shrink_mode= "by_margin", margin_m=0.003, shrink_center="centroid",)
+        self.convex_clipper_path = coacd_convex_decomposition(self.clipper_obj_path)
+        self.screw_collision_path = shrink_mesh(
+            self.screw_collision_asset,
+            shrink_mode="by_margin",
+            margin_m=0.003,
+            shrink_center="centroid",
+        )
         self.convex_screw_obj_path = coacd_convex_decomposition(self.screw_collision_path)
         self.com_screw = get_com(self.screw_obj_path)
 
         self.initial_grasp_path = initial_grasp_path
-
 
         """ ################ Basic Visual Randomization ############### """
         if randomize_lighting:
@@ -402,6 +411,7 @@ class WrenchSim(object):
                 orn=self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_base)),
                 x_jitter_range=obj_x_jit,
                 y_jitter_range=obj_y_jit,
+                z_jitter_range=obj_z_jit,
                 z_euler_jitter_range=obj_z_eul_jit,
             )
         else:
@@ -591,8 +601,14 @@ class WrenchSim(object):
         """Approximate the wrench TCP path used by the screw-engagement state machine."""
         engage_pos, engage_orn = self.get_initial_guess_grasp()
 
-        preengage_pos = engage_pos.copy()
-        preengage_pos[2] += self.safe_approach
+        # Move 10 cm along the engaging TCP pose's local -X direction.
+        # This is pose-relative, not global/world -X.
+        preengage_pos = self.offset_pos_along_local_axis(
+            engage_pos,
+            engage_orn,
+            local_axis=np.array([1.0, 0.0, 0.0], dtype=float),
+            distance=-self.safe_approach,
+        )
 
         fasten_orn = self.rotate_quat_about_local_z(
             engage_orn,
@@ -621,6 +637,8 @@ class WrenchSim(object):
 
         print("Warning: Scene did not stabilize within timeout.")
         return False
+
+
 
     def get_fixed_normal_grasp_orn(self, raw_grasp_orn=None):
         """Fix only the grasp positive normal direction in world frame.
@@ -822,6 +840,31 @@ class WrenchSim(object):
             q.append(js[0])
         return q
 
+
+    def offset_pos_along_local_axis(self, pos, quat_xyzw, local_axis, distance):
+        """Offset a world-frame position along an axis defined in the pose local frame.
+
+        For pre-engage, use local_axis=[1, 0, 0] and distance=-0.1 to move
+        10 cm along the engaging TCP pose's local -X direction, rather than
+        subtracting from the global/world x coordinate.
+        """
+        pos = np.asarray(pos, dtype=float)
+        quat_xyzw = np.asarray(quat_xyzw, dtype=float)
+        quat_norm = np.linalg.norm(quat_xyzw)
+        if quat_norm < 1e-12:
+            raise ValueError("Invalid zero-norm quaternion for local-axis offset.")
+        quat_xyzw = quat_xyzw / quat_norm
+
+        local_axis = np.asarray(local_axis, dtype=float)
+        axis_norm = np.linalg.norm(local_axis)
+        if axis_norm < 1e-12:
+            raise ValueError("Invalid zero-norm local axis for local-axis offset.")
+        local_axis = local_axis / axis_norm
+
+        axis_world = R.from_quat(quat_xyzw).apply(local_axis)
+        axis_world = axis_world / np.linalg.norm(axis_world)
+        return pos + float(distance) * axis_world
+
     def rotate_quat_about_local_z(self, quat_xyzw, angle_rad):
         """Rotate a TCP orientation about its own local +Z axis.
 
@@ -858,16 +901,20 @@ class WrenchSim(object):
         if state == "home":
             self.motion_target_pos = self.home_ee_pos.copy()
             self.motion_target_orn = self.home_ee_orn.copy()
-            self.target_gripper = self.GRIPPER_OPEN
-            self.set_gripper_state(self.target_gripper)
+            # self.target_gripper = self.GRIPPER_OPEN
+            # self.set_gripper_state(self.target_gripper)
 
         elif state == "move_preEngage":
-            # Same motion logic as the previous move_pregrasp state:
-            # move to a safe pose above the annotated engage pose.
+            # Move to a safe pose 10 cm along the engaging TCP pose's local -X axis.
+            # Do not subtract from global/world x, because the engage pose may be rotated.
             engage_pos, engage_orn = self.get_initial_guess_grasp()
 
-            preengage_pos = engage_pos.copy()
-            preengage_pos[0] -= self.safe_approach
+            preengage_pos = self.offset_pos_along_local_axis(
+                engage_pos,
+                engage_orn,
+                local_axis=np.array([1.0, 0.0, 0.0], dtype=float),
+                distance=-self.safe_approach,
+            )
 
             self.motion_target_pos = preengage_pos
             self.motion_target_orn = engage_orn.copy()
