@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: bracket_pickup
+  - task: wrench_engagement
 
 name: train_Phy_AgentOnly_image
 _target_: diffusion_policy.workspace.PhyDomain_AgentImage_workspace.PhyAgentImageWorkspace

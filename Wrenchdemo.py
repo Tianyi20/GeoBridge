@@ -18,7 +18,7 @@ timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 97)
+Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 48)
 
 Sim.make_scene(
     env_mesh_path= "./data/background/repaired_table/tabletop.obj",
@@ -30,7 +30,7 @@ Sim.make_scene(
     fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
     fpsa_include_base = True,
     obj_pose_base = [0.7, -0.05, 0.25],
-    obj_euler_base = [0.0, 0.0, 0.0],
+    obj_euler_base = [0.0, 0.0, 0.0],# screw is a hexagon, 0-60 covers all space
     randomize_lighting= True,
     # outlier scene         
     randomize_outlscene  = True,
@@ -39,17 +39,18 @@ Sim.make_scene(
     # plane height randomization
     randomize_plane_height = True,
     plane_height_jit = 0.002,
-    randomize_objpose  = False,
-    obj_x_jit    = 0.15,
-    obj_y_jit    = 0.2,
-    obj_z_eul_jit = np.pi,
+    randomize_objpose  = True,
+    obj_x_jit    = 0.1,
+    obj_y_jit    = 0.1,
+    obj_z_jit    = 0.1,
+    obj_z_eul_jit = np.pi / 6,
     randomize_campose = True,
-    cam_xyz_jit  = 0.004,
-    cam_eul_jit  = 0.002,
+    cam_xyz_jit  = 0.01,
+    cam_eul_jit  = 0.005,
     randomize_image_noise= True,
     randomize_object_color = True,
     object_color_mode = "bounded",  # "bounded" or "recolor"
-    object_color_strength = 1.0,
+    object_color_strength = 0.8,
     randomize_distractors= True,
     distractor_root= "/mnt/storage/GoogleScannedObjects",
     distractor_num_range= (0, 5),
@@ -68,6 +69,7 @@ record_every_n_sim_steps = 12
 
 # while True:
 #     p.stepSimulation()
+
 try:
     while (not Sim.done):
         p.stepSimulation()
@@ -78,10 +80,12 @@ try:
             _, _, RGB, _, _ = Sim.get_agentview_image()
             cv2.imwrite("temp_rgb.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
             obs = Sim.collect_observation()
-            print(obs["robot0_gripper_qpos"])
 
+            record_idx += 1
+            # print(obs["robot0_gripper_qpos"])
+            print(record_idx)
         # time.sleep(0.05)
-        # print(Sim.is_success())
+            print(Sim.is_success())
 
         #Sim.collect_action()
 

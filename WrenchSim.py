@@ -38,15 +38,15 @@ ul = [7] * pandaNumDofs
 jr = [7] * pandaNumDofs
 
 jointPositions = [
-    -0.0768761337796847,
-    0.1692503838434554,
-    -0.5782208367480097,
-    -1.4272947420449444,
-    0.055714113760170644,
-    1.5859262946844102,
-    0.0,
-    0.04,
-    0.04,
+                0.0,
+                -0.74586,
+                0.0,
+                -2.84895,
+                0.0,
+                2.10301,
+                np.pi / 4,
+                0.04,
+                0.04,
 ]
 rp = jointPositions
 
@@ -116,7 +116,7 @@ class WrenchSim(object):
         self.grasp_world_normal = np.array([0.0, 0.0, -1.0], dtype=float)
         self.grasp_world_tangent = np.array([1.0, 0.0, 0.0], dtype=float)
 
-        self.safe_approach = 0.1
+        self.safe_approach = 0.15
         self.safe_grasp_offset = 0.05
         self.arm_force = 200.0
         self.gripper_force = 100.0
@@ -166,11 +166,11 @@ class WrenchSim(object):
             "move_Engage",
             "fasten_screw",
         ]
-        self.state_durations = [0.01, 5.0, 2.0, 2.0]
+        self.state_durations = [0.01, 4.0, 4.0, 4.0]
 
         # fasten_screw: keep current wrench TCP position fixed and rotate
         # the TCP frame about its own local +Z axis by this angle.
-        self.fasten_angle_rad = math.radians(70.0)
+        self.fasten_angle_rad = -math.radians(45.0)
         self.state_idx = 0
         self.state = self.states[self.state_idx]
         self.state_t = 0.0
@@ -197,6 +197,7 @@ class WrenchSim(object):
         """Load wrench mesh as a separate PyBullet body and fix it to the robot EE link."""
         p = self.bullet_client
 
+        # 推荐 collision 用 COACD/VHACD 后的 convex mesh
         self.wrench_collision_asset = shrink_mesh(
             self.wrench_mesh_path,
             shrink_mode="by_margin",
@@ -279,7 +280,36 @@ class WrenchSim(object):
             )
         # set gripper width
         self.set_gripper(0.0125)
-            
+
+    def get_parent_ee_pose(self):
+        p = self.bullet_client
+        link_state = p.getLinkState(
+            self.panda,
+            self.tool_parent_link,
+            computeForwardKinematics=True,
+        )
+        parent_pos = np.array(link_state[4], dtype=float)
+        parent_orn = np.array(link_state[5], dtype=float)
+        return parent_pos, parent_orn
+
+
+    def tcp_pose_to_parent_pose(self, tcp_pos, tcp_orn):
+        p = self.bullet_client
+
+        inv_tcp_pos, inv_tcp_orn = p.invertTransform(
+            self.parent_to_tcp_pos.tolist(),
+            self.parent_to_tcp_orn.tolist(),
+        )
+
+        parent_pos, parent_orn = p.multiplyTransforms(
+            np.asarray(tcp_pos, dtype=float).tolist(),
+            np.asarray(tcp_orn, dtype=float).tolist(),
+            inv_tcp_pos,
+            inv_tcp_orn,
+        )
+
+        return np.array(parent_pos, dtype=float), np.array(parent_orn, dtype=float)
+
     def make_scene(self, 
                    env_mesh_path        = None,
                    manipulated_obj_path = None,
@@ -778,33 +808,70 @@ class WrenchSim(object):
         else:
             self.set_gripper_width(command)
 
-    def solve_ik_and_apply(self, target_pos, target_orn):
+    def solve_ik_and_apply(self, target_pos, target_orn, input_frame="wrench_tcp"):
+        """Solve IK and apply arm joint commands.
+
+        Args:
+            target_pos: Desired target position in world frame.
+            target_orn: Desired target quaternion [x, y, z, w] in world frame.
+            input_frame:
+                - "wrench_tcp" / "tool_tcp": default, old behavior.
+                  target_pos/target_orn are interpreted as the desired wrench TCP pose.
+                  If use_wrench_tcp=True, the target is converted to the parent/original
+                  EE link pose before solving IK.
+                - "parent_tcp" / "parent_ee" / "ee" / "parent": target_pos/target_orn
+                  are interpreted as the desired parent/original EE link pose directly.
+                  No parent_to_tcp inverse transform is applied. This is the interface
+                  to use when policy actions are saved in the original EE frame.
+        """
         p = self.bullet_client
         current_q = self.get_current_arm_joints()
 
+        input_frame = str(input_frame).lower()
+        wrench_tcp_frames = {"wrench_tcp", "tool_tcp", "tcp"}
+        parent_frames = {"parent_tcp", "parent_ee", "ee", "parent", "original_ee"}
+
         ik_target_pos = np.array(target_pos, dtype=float)
         ik_target_orn = np.array(target_orn, dtype=float)
-        ik_link_index = pandaEndEffectorIndex
 
-        if getattr(self, "use_wrench_tcp", False):
-            # target_pos/target_orn 是 desired wrench TCP pose
-            # parent_to_tcp 是 parent link -> wrench TCP
-            # 所以 desired parent pose = desired TCP pose * inverse(parent_to_tcp)
-            inv_tcp_pos, inv_tcp_orn = p.invertTransform(
-                self.parent_to_tcp_pos.tolist(),
-                self.parent_to_tcp_orn.tolist(),
+        # When the wrench tool is enabled, IK is solved on the parent/original EE link.
+        # Otherwise, fall back to the normal Panda end-effector index.
+        ik_link_index = (
+            self.tool_parent_link
+            if getattr(self, "use_wrench_tcp", False)
+            else pandaEndEffectorIndex
+        )
+
+        if input_frame in wrench_tcp_frames:
+            if getattr(self, "use_wrench_tcp", False):
+                # target_pos/target_orn is desired wrench TCP pose.
+                # parent_to_tcp is parent/original EE link -> wrench TCP.
+                # Therefore desired parent pose = desired TCP pose * inverse(parent_to_tcp).
+                inv_tcp_pos, inv_tcp_orn = p.invertTransform(
+                    self.parent_to_tcp_pos.tolist(),
+                    self.parent_to_tcp_orn.tolist(),
+                )
+
+                ik_target_pos, ik_target_orn = p.multiplyTransforms(
+                    ik_target_pos.tolist(),
+                    ik_target_orn.tolist(),
+                    inv_tcp_pos,
+                    inv_tcp_orn,
+                )
+
+                ik_target_pos = np.array(ik_target_pos, dtype=float)
+                ik_target_orn = np.array(ik_target_orn, dtype=float)
+
+        elif input_frame in parent_frames:
+            # target_pos/target_orn is already the desired parent/original EE pose.
+            # Do not compensate parent_to_tcp again.
+            pass
+
+        else:
+            raise ValueError(
+                f"Unknown input_frame={input_frame!r}. "
+                f"Use one of {sorted(wrench_tcp_frames | parent_frames)}."
             )
-
-            ik_target_pos, ik_target_orn = p.multiplyTransforms(
-                target_pos.tolist(),
-                target_orn.tolist(),
-                inv_tcp_pos,
-                inv_tcp_orn,
-            )
-
-            ik_target_pos = np.array(ik_target_pos, dtype=float)
-            ik_target_orn = np.array(ik_target_orn, dtype=float)
-            ik_link_index = self.tool_parent_link
 
         jointPoses = p.calculateInverseKinematics(
             self.panda,
@@ -968,7 +1035,7 @@ class WrenchSim(object):
 
         return self.target_pos, self.target_orn
 
-    def collect_observation(self, direct = False):
+    def collect_observation(self, direct = False, collect_wrench_ee = False):
         """
         TODO: Collect observations for diffusion policy
         obs = {
@@ -978,8 +1045,12 @@ class WrenchSim(object):
             "robot0_eef_quat": (4,),            # 末端姿态 quaternion
             "robot0_gripper_qpos": (1,),        # 二值手爪状态：1=open, 0=closed
         }
+        Use origional franka ee pose instead of new wrench's pose
         """
-        eef_pos, eef_quat = self.get_ee_pose()
+        if collect_wrench_ee:
+            eef_pos, eef_quat = self.get_ee_pose()
+        else:
+            eef_pos, eef_quat = self.get_parent_ee_pose()
 
         finger_widths = np.array([
             self.bullet_client.getJointState(self.panda, 9)[0],
@@ -1011,10 +1082,20 @@ class WrenchSim(object):
     
   
     def collect_action(self):      
+        "Always collect original ee tcp instead of wrench tcp"
         # 1维 binary gripper command：1=open, 0=closed
         gripper = np.array([self.target_gripper], dtype=np.float32)
 
-        action = np.concatenate([self.target_pos, self.target_orn, gripper], axis=0).astype(np.float32)
+        parent_target_pos, parent_target_orn = self.tcp_pose_to_parent_pose(
+            self.target_pos,
+            self.target_orn,
+        )
+
+        action = np.concatenate(
+            [parent_target_pos, parent_target_orn, gripper],
+            axis=0,
+        ).astype(np.float32)
+
         return action
 
 
@@ -1161,30 +1242,90 @@ class WrenchSim(object):
         return rgba[..., :3]
     
 
-    def is_success(self, lift_height_threshold=0.08, require_contact=True):
+    def get_screw_rotation_about_initial_z(self):
+        """Return screw yaw/twist change about its initial local z axis in radians.
+
+        The angle is measured by projecting the screw's initial and current
+        local +X axes onto the plane perpendicular to the initial local +Z axis,
+        then taking the signed angle between the projected axes. This is more
+        stable than directly reading Euler yaw when the screw has small tilt.
+        """
+        if not hasattr(self, "screw_obj_id") or self.initial_obj_orn is None:
+            return 0.0
+
+        _, current_obj_orn = get_true_PositionAndOrientation(
+            self.bullet_client,
+            self.screw_obj_id,
+        )
+
+        initial_rot = R.from_quat(np.asarray(self.initial_obj_orn, dtype=float))
+        current_rot = R.from_quat(np.asarray(current_obj_orn, dtype=float))
+
+        initial_z_axis = initial_rot.apply(np.array([0.0, 0.0, 1.0], dtype=float))
+        initial_z_axis = initial_z_axis / np.linalg.norm(initial_z_axis)
+
+        def project_to_initial_xy(v):
+            v = np.asarray(v, dtype=float)
+            v = v - np.dot(v, initial_z_axis) * initial_z_axis
+            n = np.linalg.norm(v)
+            if n < 1e-8:
+                return None
+            return v / n
+
+        initial_ref = project_to_initial_xy(
+            initial_rot.apply(np.array([1.0, 0.0, 0.0], dtype=float))
+        )
+        current_ref = project_to_initial_xy(
+            current_rot.apply(np.array([1.0, 0.0, 0.0], dtype=float))
+        )
+
+        # Fallback is only for degenerate poses where +X is almost parallel to
+        # the initial z axis. It should not happen for a normal screw pose, but
+        # keeps the success check from crashing on bad simulation states.
+        if initial_ref is None or current_ref is None:
+            initial_ref = project_to_initial_xy(
+                initial_rot.apply(np.array([0.0, 1.0, 0.0], dtype=float))
+            )
+            current_ref = project_to_initial_xy(
+                current_rot.apply(np.array([0.0, 1.0, 0.0], dtype=float))
+            )
+
+        if initial_ref is None or current_ref is None:
+            return 0.0
+
+        sin_angle = np.dot(np.cross(initial_ref, current_ref), initial_z_axis)
+        cos_angle = np.dot(initial_ref, current_ref)
+        return float(np.arctan2(sin_angle, cos_angle))
+
+    def is_success(self, rotation_threshold_deg=33.0, require_contact=True):
+        """Success = wrench tool contacts screw and screw rotates >= threshold.
+
+        The rotation threshold is measured around the screw's initial local z
+        axis. By default, success requires at least 40 degrees of absolute
+        rotation from the settled initial screw orientation saved in make_scene().
+        """
         if not hasattr(self, "screw_obj_id"):
             return False
 
-        obj_pos, _ = get_true_PositionAndOrientation(
-            self.bullet_client, self.screw_obj_id
-        )
-        obj_pos = np.array(obj_pos, dtype=float)
+        if not hasattr(self, "wrench_body_id") or self.wrench_body_id is None:
+            return False
 
-        if self.initial_obj_pos is None:
-            lifted = obj_pos[2] > lift_height_threshold
+        if self.initial_obj_orn is None:
+            return False
+
+        if require_contact:
+            contacts = self.bullet_client.getContactPoints(
+                bodyA=self.wrench_body_id,
+                bodyB=self.screw_obj_id,
+            )
+            wrench_contact_screw = len(contacts) > 0
         else:
-            lifted = (obj_pos[2] - self.initial_obj_pos[2]) > lift_height_threshold
+            wrench_contact_screw = True
 
-        if not require_contact:
-            return bool(lifted)
+        screw_angle_rad = abs(self.get_screw_rotation_about_initial_z())
+        rotated_enough = screw_angle_rad >= math.radians(float(rotation_threshold_deg))
 
-        contacts = self.bullet_client.getContactPoints(
-            bodyA=self.panda,
-            bodyB=self.screw_obj_id,
-        )
-        grasped = len(contacts) > 0
-
-        return bool(lifted and grasped)
+        return bool(wrench_contact_screw and rotated_enough)
 
     def enable_high_quality_rendering(self):
         try:

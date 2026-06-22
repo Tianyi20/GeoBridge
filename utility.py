@@ -8,6 +8,7 @@ import os
 from scipy.spatial.transform import Rotation
 import open3d as o3d
 import cv2
+import trimesh
 def load_initial_grasp_pose(path: str):
     """
     读取 grasp_pose.yaml / grasp_pose.json
@@ -376,3 +377,82 @@ def quat_from_rotation_matrix(rot):
 
     quat = np.array([qx, qy, qz, qw], dtype=float)
     return quat / np.linalg.norm(quat)
+
+def _uniform_shrink_about_point(mesh: trimesh.Trimesh, scale: float, center: np.ndarray) -> trimesh.Trimesh:
+    # v' = c + s*(v - c)
+    V = mesh.vertices
+    V2 = center + scale * (V - center)
+    m2 = trimesh.Trimesh(V2, mesh.faces, process=False)
+    return m2
+
+def shrink_mesh_uniform(obj_path: str, scale: float = 0.99, about: str = "centroid") -> str:
+    """
+    将 mesh 做一次等比缩放（<1.0），返回输出 OBJ 路径（带缓存，旁存）。
+    about: "centroid" | "center_mass" | "bbox"
+    """
+    assert 0.0 < scale < 1.0, "scale 必须在 (0,1)"
+    mesh = trimesh.load(obj_path, force="mesh")
+    if about == "center_mass":
+        c = mesh.center_mass
+    elif about == "bbox":
+        c = mesh.bounding_box.centroid
+    else:
+        c = mesh.centroid
+
+    out_path = os.path.splitext(obj_path)[0] + f"_shrink{int(scale*1000):03d}.obj"
+    if os.path.exists(out_path):
+        return out_path
+
+    m2 = _uniform_shrink_about_point(mesh, scale, c)
+    m2.export(out_path)
+    return out_path
+
+def shrink_mesh_by_margin(obj_path: str, margin_m: float = 0.003, about: str = "centroid") -> str:
+    """
+    目标是在“半径”意义上整体向内缩 margin_m 米。
+    等效为选择一个 scale = 1 - margin / R_max，其中 R_max = max(||v - c||)。
+    """
+    mesh = trimesh.load(obj_path, force="mesh")
+    if about == "center_mass":
+        c = mesh.center_mass
+    elif about == "bbox":
+        c = mesh.bounding_box.centroid
+    else:
+        c = mesh.centroid
+
+    R = np.linalg.norm(mesh.vertices - c, axis=1).max()
+    if R <= 1e-9:
+        # 退化情况：几乎是点
+        return obj_path
+    scale = max(0.01, 1.0 - float(margin_m) / float(R))  # 防止缩成0
+    out_path = os.path.splitext(obj_path)[0] + f"_shrink{int(scale*1000):03d}.obj"
+    if os.path.exists(out_path):
+        return out_path
+
+    m2 = _uniform_shrink_about_point(mesh, scale, c)
+    m2.export(out_path)
+    return out_path
+
+def shrink_mesh(collision_asset_path: str,
+                shrink_mode: str = "by_margin",  # "by_margin" | "by_scale" | "none"
+                margin_m: float = 0.003,
+                scale: float = 0.99,
+                shrink_center: str = "centroid",
+                ) -> str:
+    """
+    1) 保证是 .obj (旁存)
+    2) 可选 shrink（优先 by_margin，再 by_scale）
+    返回: COACD 输出 obj 路径
+    """
+    # 1) 保证是 OBJ
+    obj_path = collision_asset_path
+
+    # 2) 缩
+    if shrink_mode == "by_margin":
+        obj_shrunk = shrink_mesh_by_margin(obj_path, margin_m=margin_m, about=shrink_center)
+    elif shrink_mode == "by_scale":
+        obj_shrunk = shrink_mesh_uniform(obj_path, scale=scale, about=shrink_center)
+    else:
+        obj_shrunk = obj_path
+
+    return obj_shrunk
