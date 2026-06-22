@@ -38,15 +38,15 @@ ul = [7] * pandaNumDofs
 jr = [7] * pandaNumDofs
 
 jointPositions = [
-                0.0,
-                -0.74586,
-                0.0,
-                -2.84895,
-                0.0,
-                2.10301,
-                np.pi / 4,
-                0.04,
-                0.04,
+    -0.12155781504648557,
+    -0.42671984664599694,
+    -0.00039830463755210403,
+    -2.487372174852445,
+    -0.00037976347864174736,
+    2.0591580293970186,
+    0.6636682670894513,
+    0.04,
+    0.04,
 ]
 rp = jointPositions
 
@@ -68,7 +68,9 @@ class WrenchSim(object):
         self.collplaneDR = PoseDR(self.bullet_client, seed=seed)
         self.distractorDR = DistractorDR(self.bullet_client, seed=seed)
         self.objectColorDR = ObjectColorDR(self.bullet_client, seed=seed)
+        self.wrenchColorDR = ObjectColorDR(self.bullet_client, seed=seed+1)
         self.fpsaObjectDR = FPSAObjectDR(seed=seed)
+        self.wrenchposeDR = PoseDR(self.bullet_client, seed=seed)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -116,7 +118,7 @@ class WrenchSim(object):
         self.grasp_world_normal = np.array([0.0, 0.0, -1.0], dtype=float)
         self.grasp_world_tangent = np.array([1.0, 0.0, 0.0], dtype=float)
 
-        self.safe_approach = 0.15
+        self.safe_approach = 0.10
         self.safe_grasp_offset = 0.05
         self.arm_force = 200.0
         self.gripper_force = 100.0
@@ -329,6 +331,9 @@ class WrenchSim(object):
                    # plane height randomization
                    randomize_plane_height = True,
                    plane_height_jit = 0.008,
+                   randomize_wrenchpose = True,
+                   wrench_xyz_jitter = 0.01,
+                   wrench_y_euler_jitter = 0.02,
                    randomize_objpose  = True,
                    obj_x_jit    = 0.2,
                    obj_y_jit    = 0.2,
@@ -346,6 +351,9 @@ class WrenchSim(object):
                    object_recolor_target_color = None,
                    object_specular_range = (0.02, 0.8),
                    randomize_distractors = True,
+                   randomize_wrench_color = True,
+                   wrench_color_mode = "bounded",
+                   wrench_color_strength = 0.35,
                    distractor_root = "/mnt/storage/GoogleScannedObjects",
                    distractor_num_range = (1, 5),
                    distractor_target_size_range = (0.06, 0.16),
@@ -375,18 +383,35 @@ class WrenchSim(object):
         # 先用你当前的 EE link；如果发现不对，再换成 panda_hand 的 index，比如 8
         self.tool_parent_link = pandaEndEffectorIndex
 
-        # parent link frame -> wrench mesh origin
-        # 这个需要你根据 mesh 在 Blender / MeshLab / SolidWorks 里调
         self.parent_to_wrench_pos = np.array([0.0, 0.0, 0.0], dtype=float)
         self.parent_to_wrench_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
 
-        # parent link frame -> wrench TCP
-        # 这个才是以后 policy/action/observation 用的 TCP
-        # here our base TCP relative to mesh origin is 0.16417
-        self.parent_to_tcp_pos = np.array([0.16417, 0.0, 0.0], dtype=float)
-        self.parent_to_tcp_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+        # wrench mesh origin -> actual wrench TCP / socket center
+        # 这个是 mesh 自己坐标系里的 socket TCP，不应该直接当 parent_to_tcp 用
+        self.wrench_to_tcp_pos = np.array([0.16417, 0.0, 0.0], dtype=float)
+        self.wrench_to_tcp_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
 
-        # load wrench tool
+        if randomize_wrenchpose:
+            self.parent_to_wrench_pos, self.parent_to_wrench_orn = self.wrenchposeDR.sample_SE3_randomization(
+                pos=self.parent_to_wrench_pos,
+                orn=self.parent_to_wrench_orn,
+                x_jitter_range=wrench_xyz_jitter,
+                y_jitter_range=wrench_xyz_jitter,
+                z_jitter_range=wrench_xyz_jitter,
+                y_euler_jitter_range=wrench_y_euler_jitter,
+        )
+        # IMPORTANT:
+        # actual parent -> TCP = parent -> wrench mesh * wrench mesh -> TCP
+        tcp_pos, tcp_orn = self.bullet_client.multiplyTransforms(
+            self.parent_to_wrench_pos.tolist(),
+            self.parent_to_wrench_orn.tolist(),
+            self.wrench_to_tcp_pos.tolist(),
+            self.wrench_to_tcp_orn.tolist(),
+        )
+
+        self.parent_to_tcp_pos = np.array(tcp_pos, dtype=float)
+        self.parent_to_tcp_orn = np.array(tcp_orn, dtype=float)
+
         self.load_wrench_tool()
 
         # After enabling the wrench TCP, refresh the home pose so all state-machine
@@ -572,7 +597,20 @@ class WrenchSim(object):
             )
         else:
             self.objectColorDR.reset()
-            self.object_color_cfg = None
+
+        if randomize_wrench_color:
+            self.wrench_color_cfg = self.wrenchColorDR.sample_and_apply_object_color_randomization(
+                body_id=self.wrench_body_id,
+                mode=wrench_color_mode,
+                strength=wrench_color_strength,
+                recolor_palette=object_recolor_palette,
+                recolor_target_color=object_recolor_target_color,
+                specular_range=object_specular_range,
+                alpha=None,  # preserve current visual alpha
+            )
+        else:
+            self.wrenchColorDR.reset()
+
 
         self.initial_grasp_guess = load_initial_grasp_pose(initial_grasp_path)
 
