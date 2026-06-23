@@ -24,6 +24,8 @@ class WrenchEnv(gym.Env):
                  randomize_outlscene = True,
                  randomize_plane_height = True,
                  randomize_campose = True,
+                 randomize_wrenchpose = True,
+                 randomize_wrenchcolor = True,
         ):
         self._seed = seed
         self.if_FPSA = if_FPSA
@@ -34,6 +36,8 @@ class WrenchEnv(gym.Env):
         self.randomize_distractors = randomize_distractors
         self.randomize_outlscene = randomize_outlscene
         self.randomize_plane_height = randomize_plane_height
+        self.randomize_wrenchpose = randomize_wrenchpose
+        self.randomize_wrenchcolor = randomize_wrenchcolor
         self.randomize_campose = randomize_campose
         self.sim_steps_per_action = sim_steps_per_action
         
@@ -97,8 +101,8 @@ class WrenchEnv(gym.Env):
                 if_FPSA = self.if_FPSA,
                 fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
                 fpsa_include_base = True,
-                obj_pose_base = [0.7, -0.05, 0.25],
-                obj_euler_base = [0.0, 0.0, np.pi / 6],# screw is a hexagon, 0-60 covers all space
+                obj_pose_base = [0.75, -0.05, 0.25],
+                obj_euler_base = [0.0, 0.0, 0.0],# screw is a hexagon, 0-60 covers all space
                 randomize_lighting= self.randomize_lighting,
                 # outlier scene         
                 randomize_outlscene  = self.randomize_outlscene,
@@ -107,10 +111,13 @@ class WrenchEnv(gym.Env):
                 # plane height randomization
                 randomize_plane_height = self.randomize_plane_height,
                 plane_height_jit = 0.002,
+                randomize_wrenchpose = self.randomize_wrenchpose,
+                wrench_xyz_jitter = 0.01,
+                wrench_y_euler_jitter= 0.02,
                 randomize_objpose  = self.randomize_objpose,
-                obj_x_jit    = 0.1,
+                obj_x_jit    = 0.06,
                 obj_y_jit    = 0.1,
-                obj_z_jit    = 0.1,
+                obj_z_jit    = 0.05,
                 obj_z_eul_jit = np.pi / 6,
                 randomize_campose = self.randomize_campose,
                 cam_xyz_jit  = 0.01,
@@ -118,7 +125,10 @@ class WrenchEnv(gym.Env):
                 randomize_image_noise= self.randomize_image_noise,
                 randomize_object_color = self.randomize_objcolor,
                 object_color_mode = "bounded",  # "bounded" or "recolor"
-                object_color_strength = 0.8,
+                object_color_strength = 0.5,
+                randomize_wrench_color = self.randomize_wrenchcolor,
+                wrench_color_mode= "bounded",
+                wrench_color_strength= 0.005,
                 randomize_distractors= self.randomize_distractors,
                 distractor_root= "/mnt/storage/GoogleScannedObjects",
                 distractor_num_range= (0, 5),

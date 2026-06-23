@@ -18,7 +18,7 @@ timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 32248)
+Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 432248)
 
 Sim.make_scene(
     env_mesh_path= "./data/background/repaired_table/tabletop.obj",
@@ -39,10 +39,13 @@ Sim.make_scene(
     # plane height randomization
     randomize_plane_height = True,
     plane_height_jit = 0.002,
+    randomize_wrenchpose = True,
+    wrench_xyz_jitter = 0.01,
+    wrench_y_euler_jitter= 0.02,
     randomize_objpose  = True,
     obj_x_jit    = 0.06,
     obj_y_jit    = 0.1,
-    obj_z_jit    = 0.06,
+    obj_z_jit    = 0.05,
     obj_z_eul_jit = np.pi / 6,
     randomize_campose = True,
     cam_xyz_jit  = 0.01,
@@ -51,8 +54,9 @@ Sim.make_scene(
     randomize_object_color = True,
     object_color_mode = "bounded",  # "bounded" or "recolor"
     object_color_strength = 0.5,
+    randomize_wrench_color = True,
     wrench_color_mode= "bounded",
-    wrench_color_strength= 0.1,
+    wrench_color_strength= 0.005,
     randomize_distractors= True,
     distractor_root= "/mnt/storage/GoogleScannedObjects",
     distractor_num_range= (0, 5),
@@ -87,7 +91,7 @@ try:
             # print(obs["robot0_gripper_qpos"])
             print(record_idx)
         # time.sleep(0.05)
-            print(Sim.is_success())
+            print(Sim.is_success(debug= False))
 
         #Sim.collect_action()
 

@@ -193,6 +193,14 @@ class WrenchSim(object):
         self.last_grasp_pose = None
         self.last_grasp_orn = None
 
+        # Success / failure monitor. These are reset after make_scene() finishes,
+        # because success should be measured from the settled initial screw pose.
+        self.initial_obj_pos = None
+        self.initial_obj_orn = None
+        self.success_fail_reason = None
+        self.gripper_opened_during_episode = False
+        self.success_monitor_active = False
+
         self.prepare_state(self.state)
 
     def load_wrench_tool(self):
@@ -280,8 +288,11 @@ class WrenchSim(object):
                 -1,
                 enableCollision=0,
             )
-        # set gripper width
-        self.set_gripper(0.0125)
+        # The wrench is a rigidly mounted tool. Keep the gripper logically
+        # closed for action/observation compatibility, while using a small
+        # physical finger width in simulation to avoid visual/collision issues.
+        self.target_gripper = self.GRIPPER_CLOSED
+        self.set_gripper_width(0.0125)
 
     def get_parent_ee_pose(self):
         p = self.bullet_client
@@ -349,11 +360,11 @@ class WrenchSim(object):
                    object_color_strength = 0.35,
                    object_recolor_palette = None,
                    object_recolor_target_color = None,
-                   object_specular_range = (0.02, 0.8),
-                   randomize_distractors = True,
+                   object_specular_range = (0.02, 0.5),
                    randomize_wrench_color = True,
                    wrench_color_mode = "bounded",
                    wrench_color_strength = 0.35,
+                   randomize_distractors = True,
                    distractor_root = "/mnt/storage/GoogleScannedObjects",
                    distractor_num_range = (1, 5),
                    distractor_target_size_range = (0.06, 0.16),
@@ -664,6 +675,11 @@ class WrenchSim(object):
         )
         self.initial_obj_pos = np.array(obj_pos, dtype=float)
         self.initial_obj_orn = np.array(obj_orn, dtype=float)
+
+        # Start success monitoring only after all scene randomization, settling,
+        # and static distractor loading are finished.
+        self.target_gripper = self.GRIPPER_CLOSED
+        self.reset_success_monitor()
 
     def get_state_machine_ee_waypoints(self):
         """Approximate the wrench TCP path used by the screw-engagement state machine."""
@@ -1057,6 +1073,12 @@ class WrenchSim(object):
         print("state ->", self.state)
 
     def step(self):
+        # Guard against external callers stepping once more after the state
+        # machine has already finished. Without this, state_idx can be out of
+        # range after switch_to_next_state() sets self.done = True.
+        if self.done:
+            return self.target_pos, self.target_orn
+
         self.t += self.control_dt
         self.state_t += self.control_dt
 
@@ -1067,6 +1089,9 @@ class WrenchSim(object):
             self.target_pos = (1.0 - s) * self.motion_start_pos + s * self.motion_target_pos
             self.target_orn = quat_slerp(self.motion_start_orn, self.motion_target_orn, s)
             self.solve_ik_and_apply(self.target_pos, self.target_orn)
+
+        # Track irreversible failure conditions such as gripper opening.
+        self.update_success_monitor()
 
         if self.state_t >= duration:
             self.switch_to_next_state()
@@ -1335,36 +1360,378 @@ class WrenchSim(object):
         cos_angle = np.dot(initial_ref, current_ref)
         return float(np.arctan2(sin_angle, cos_angle))
 
-    def is_success(self, rotation_threshold_deg=33.0, require_contact=True):
-        """Success = wrench tool contacts screw and screw rotates >= threshold.
+    def reset_success_monitor(self):
+        """Reset per-episode success/failure monitors.
 
-        The rotation threshold is measured around the screw's initial local z
-        axis. By default, success requires at least 40 degrees of absolute
-        rotation from the settled initial screw orientation saved in make_scene().
+        Call this after make_scene() has finished and initial_obj_pos/orn have
+        been stored. Any gripper opening after this point is treated as an
+        irreversible failure for this rigidly mounted wrench task.
         """
+        self.success_fail_reason = None
+        self.gripper_opened_during_episode = False
+        self.success_monitor_active = True
+
+    def get_gripper_mean_width(self):
+        """Return the mean Panda finger opening used by the simulated gripper."""
+        finger_widths = np.array([
+            self.bullet_client.getJointState(self.panda, 9)[0],
+            self.bullet_client.getJointState(self.panda, 10)[0],
+        ], dtype=float)
+        return float(np.mean(finger_widths))
+
+    def update_success_monitor(self, gripper_open_width_threshold=0.02):
+        """Track irreversible failure conditions during the episode.
+
+        For this task the wrench is rigidly mounted. The gripper command is kept
+        only for compatibility with the previous data/action format, so any
+        command-level or measured opening after reset_success_monitor() should
+        invalidate the episode.
+        """
+        if not getattr(self, "success_monitor_active", False):
+            return
+
+        commanded_open = (
+            self.target_gripper is not None
+            and float(self.target_gripper) >= 0.5
+        )
+        measured_open = self.get_gripper_mean_width() > float(gripper_open_width_threshold)
+
+        if commanded_open or measured_open:
+            self.gripper_opened_during_episode = True
+            self.success_fail_reason = "gripper_opened"
+
+    def _quat_axis(self, quat_xyzw, local_axis):
+        """Return a local axis expressed in world frame for a xyzw quaternion."""
+        quat_xyzw = np.asarray(quat_xyzw, dtype=float)
+        quat_norm = np.linalg.norm(quat_xyzw)
+        if quat_norm < 1e-12:
+            return None
+
+        local_axis = np.asarray(local_axis, dtype=float)
+        axis_norm = np.linalg.norm(local_axis)
+        if axis_norm < 1e-12:
+            return None
+
+        rot = R.from_quat(quat_xyzw / quat_norm)
+        axis = rot.apply(local_axis / axis_norm)
+        n = np.linalg.norm(axis)
+        if n < 1e-8:
+            return None
+        return axis / n
+
+    def get_wrench_screw_alignment_metrics(self):
+        """Measure current socket/screw alignment.
+
+        radial_error:
+            Distance between wrench TCP/socket center and the current screw
+            engagement point, measured perpendicular to the screw axis.
+        axial_error:
+            Signed distance along the screw axis.
+        axis_error_rad:
+            Angle between wrench TCP local +Z and the expected engagement axis.
+            With the current convention, wrench TCP +Z points downward, so it is
+            compared against -screw_z instead of using abs(dot()).
+        """
+        if not hasattr(self, "screw_obj_id"):
+            return None
+        if not hasattr(self, "wrench_body_id") or self.wrench_body_id is None:
+            return None
+
+        wrench_tcp_pos, wrench_tcp_orn = self.get_ee_pose()
+
+        # The annotated engagement point is expressed in the screw/object frame,
+        # so this tracks the socket center after the screw has rotated.
+        screw_engage_pos, _ = self.get_initial_guess_grasp()
+
+        _, screw_orn = get_true_PositionAndOrientation(
+            self.bullet_client,
+            self.screw_obj_id,
+        )
+
+        screw_z = self._quat_axis(screw_orn, [0.0, 0.0, 1.0])
+        wrench_z = self._quat_axis(wrench_tcp_orn, [0.0, 0.0, 1.0])
+
+        if screw_z is None or wrench_z is None:
+            return None
+
+        delta = np.asarray(wrench_tcp_pos, dtype=float) - np.asarray(screw_engage_pos, dtype=float)
+        axial_error = float(np.dot(delta, screw_z))
+        radial_vec = delta - axial_error * screw_z
+        radial_error = float(np.linalg.norm(radial_vec))
+
+        # No abs(dot): if the wrench flips upside-down it should fail.
+        axis_dot = float(np.clip(np.dot(wrench_z, -screw_z), -1.0, 1.0))
+        axis_error_rad = float(np.arccos(axis_dot))
+
+        return {
+            "radial_error": radial_error,
+            "axial_error": axial_error,
+            "axis_error_rad": axis_error_rad,
+        }
+
+    def get_screw_stability_metrics(self):
+        """Check that the task turned the screw instead of knocking it away."""
+        if not hasattr(self, "screw_obj_id"):
+            return None
+        if self.initial_obj_pos is None or self.initial_obj_orn is None:
+            return None
+
+        current_pos, current_orn = get_true_PositionAndOrientation(
+            self.bullet_client,
+            self.screw_obj_id,
+        )
+
+        initial_pos = np.asarray(self.initial_obj_pos, dtype=float)
+        current_pos = np.asarray(current_pos, dtype=float)
+
+        initial_z = self._quat_axis(self.initial_obj_orn, [0.0, 0.0, 1.0])
+        current_z = self._quat_axis(current_orn, [0.0, 0.0, 1.0])
+
+        if initial_z is None or current_z is None:
+            return None
+
+        delta = current_pos - initial_pos
+        axial_disp = float(np.dot(delta, initial_z))
+        planar_disp = float(np.linalg.norm(delta - axial_disp * initial_z))
+
+        # No abs(dot): a flipped screw should fail instead of looking aligned.
+        tilt_dot = float(np.clip(np.dot(initial_z, current_z), -1.0, 1.0))
+        tilt_rad = float(np.arccos(tilt_dot))
+
+        return {
+            "planar_disp": planar_disp,
+            "axial_disp": axial_disp,
+            "tilt_rad": tilt_rad,
+        }
+
+    def has_wrench_screw_contact(self, max_contact_distance=0.003):
+        """Return True if the wrench is in actual or near contact with the screw."""
+        if not hasattr(self, "wrench_body_id") or self.wrench_body_id is None:
+            return False
         if not hasattr(self, "screw_obj_id"):
             return False
 
-        if not hasattr(self, "wrench_body_id") or self.wrench_body_id is None:
-            return False
+        contacts = self.bullet_client.getContactPoints(
+            bodyA=self.wrench_body_id,
+            bodyB=self.screw_obj_id,
+        )
 
-        if self.initial_obj_orn is None:
-            return False
+        for c in contacts:
+            # PyBullet contact tuple index 8 is contact distance. Negative values
+            # are penetration; small positive values are near-contact.
+            if c[8] <= float(max_contact_distance):
+                return True
+        return False
+
+    def is_success(
+        self,
+        rotation_threshold_deg=33.0,
+        require_contact=True,
+        gripper_open_width_threshold=0.02,
+        wrench_radial_tol=0.012,
+        wrench_axial_tol=0.018,
+        wrench_axis_tol_deg=15.0,
+        screw_planar_tol=0.015,
+        screw_axial_tol=0.020,
+        screw_tilt_tol_deg=12.0,
+        return_info=False,
+        debug=False,
+    ):
+        """Success check for socket-wrench fastener turning.
+
+        Compared with the old contact + abs(rotation) check, this version is
+        intentionally stricter:
+          1. Optionally require the state machine to be done.
+          2. Fail immediately if the gripper was opened during the episode.
+          3. Require signed screw rotation in the commanded fastening direction.
+          4. Require the wrench socket/TCP to remain aligned with the screw.
+          5. Require the screw not to be pushed away, pulled out, or tilted.
+          6. Optionally require wrench-screw contact at the end.
+        """
+        info = {
+            "success": False,
+            "reason": None,
+        }
+
+        def _debug_print():
+            if not debug:
+                return
+
+            print("\n========== [is_success DEBUG] ==========")
+            print(f"success: {info.get('success')}")
+            print(f"reason : {info.get('reason')}")
+
+            # Basic state-machine / gripper status
+            print("----------------------------------------")
+            print(f"state      : {getattr(self, 'state', None)}")
+            print(f"state_idx  : {getattr(self, 'state_idx', None)}")
+            print(f"require_contact : {require_contact}")
+
+            try:
+                gripper_width = self.get_gripper_mean_width()
+            except Exception:
+                gripper_width = None
+
+            print(f"target_gripper : {getattr(self, 'target_gripper', None)}")
+            print(f"gripper_width  : {gripper_width}")
+            print(f"gripper_open_width_threshold : {gripper_open_width_threshold}")
+            print(
+                "gripper_opened_during_episode : "
+                f"{getattr(self, 'gripper_opened_during_episode', None)}"
+            )
+
+            # Rotation status
+            if "screw_angle_deg" in info:
+                print("----------------------------------------")
+                print("Rotation:")
+                print(f"  screw_angle_deg        : {info['screw_angle_deg']:.3f}")
+                print(f"  signed_progress_deg    : {info['signed_progress_deg']:.3f}")
+                print(f"  rotation_threshold_deg : {info['rotation_threshold_deg']:.3f}")
+                print(f"  fasten_angle_deg       : {math.degrees(float(self.fasten_angle_rad)):.3f}")
+
+            # Wrench alignment status
+            if "wrench_radial_error" in info:
+                print("----------------------------------------")
+                print("Wrench-Screw Alignment:")
+                print(
+                    f"  radial_error : {info['wrench_radial_error']:.6f} "
+                    f"/ tol {info['wrench_radial_tol']:.6f}"
+                )
+                print(
+                    f"  axial_error  : {info['wrench_axial_error']:.6f} "
+                    f"/ tol ±{info['wrench_axial_tol']:.6f}"
+                )
+                print(
+                    f"  axis_error   : {info['wrench_axis_error_deg']:.3f} deg "
+                    f"/ tol {info['wrench_axis_tol_deg']:.3f} deg"
+                )
+
+            # Screw stability status
+            if "screw_planar_disp" in info:
+                print("----------------------------------------")
+                print("Screw Stability:")
+                print(
+                    f"  planar_disp : {info['screw_planar_disp']:.6f} "
+                    f"/ tol {info['screw_planar_tol']:.6f}"
+                )
+                print(
+                    f"  axial_disp  : {info['screw_axial_disp']:.6f} "
+                    f"/ tol ±{info['screw_axial_tol']:.6f}"
+                )
+                print(
+                    f"  tilt        : {info['screw_tilt_deg']:.3f} deg "
+                    f"/ tol {info['screw_tilt_tol_deg']:.3f} deg"
+                )
+
+            # Contact status
+            if "has_contact" in info:
+                print("----------------------------------------")
+                print("Contact:")
+                print(f"  has_contact : {info['has_contact']}")
+
+            print("========================================\n")
+
+        def _return(value):
+            info["success"] = bool(value)
+            _debug_print()
+            return (bool(value), info) if return_info else bool(value)
+
+        if not hasattr(self, "screw_obj_id"):
+            info["reason"] = "missing_screw"
+            return _return(False)
+
+        if not hasattr(self, "wrench_body_id") or self.wrench_body_id is None:
+            info["reason"] = "missing_wrench"
+            return _return(False)
+
+        if self.initial_obj_pos is None or self.initial_obj_orn is None:
+            info["reason"] = "missing_initial_screw_pose"
+            return _return(False)
+
+        # Make sure the latest gripper state is included even if is_success() is
+        # called directly after external action execution.
+        self.update_success_monitor(
+            gripper_open_width_threshold=gripper_open_width_threshold
+        )
+
+
+        if getattr(self, "gripper_opened_during_episode", False):
+            info["reason"] = "gripper_opened"
+            return _return(False)
+
+        # Signed screw rotation. Do NOT use abs(): rotating in the wrong
+        # direction must fail. fasten_angle_rad defines the desired direction.
+        screw_angle_rad = self.get_screw_rotation_about_initial_z()
+        expected_screw_sign = -np.sign(float(self.fasten_angle_rad))
+        if expected_screw_sign == 0.0:
+            expected_screw_sign = 1.0
+
+        signed_progress_rad = expected_screw_sign * screw_angle_rad
+        rotation_threshold_rad = math.radians(float(rotation_threshold_deg))
+
+        info["screw_angle_deg"] = math.degrees(float(screw_angle_rad))
+        info["signed_progress_deg"] = math.degrees(float(signed_progress_rad))
+        info["rotation_threshold_deg"] = float(rotation_threshold_deg)
+
+        if signed_progress_rad < rotation_threshold_rad:
+            info["reason"] = "insufficient_or_wrong_direction_rotation"
+            return _return(False)
+
+        alignment = self.get_wrench_screw_alignment_metrics()
+        if alignment is None:
+            info["reason"] = "invalid_alignment_metrics"
+            return _return(False)
+
+        info["wrench_radial_error"] = alignment["radial_error"]
+        info["wrench_axial_error"] = alignment["axial_error"]
+        info["wrench_axis_error_deg"] = math.degrees(alignment["axis_error_rad"])
+        info["wrench_radial_tol"] = float(wrench_radial_tol)
+        info["wrench_axial_tol"] = float(wrench_axial_tol)
+        info["wrench_axis_tol_deg"] = float(wrench_axis_tol_deg)
+
+        wrench_aligned = (
+            alignment["radial_error"] <= float(wrench_radial_tol)
+            and abs(alignment["axial_error"]) <= float(wrench_axial_tol)
+            and alignment["axis_error_rad"] <= math.radians(float(wrench_axis_tol_deg))
+        )
+
+        if not wrench_aligned:
+            info["reason"] = "wrench_screw_misaligned"
+            return _return(False)
+
+        stability = self.get_screw_stability_metrics()
+        if stability is None:
+            info["reason"] = "invalid_screw_stability_metrics"
+            return _return(False)
+
+        info["screw_planar_disp"] = stability["planar_disp"]
+        info["screw_axial_disp"] = stability["axial_disp"]
+        info["screw_tilt_deg"] = math.degrees(stability["tilt_rad"])
+        info["screw_planar_tol"] = float(screw_planar_tol)
+        info["screw_axial_tol"] = float(screw_axial_tol)
+        info["screw_tilt_tol_deg"] = float(screw_tilt_tol_deg)
+
+        screw_stable = (
+            stability["planar_disp"] <= float(screw_planar_tol)
+            and abs(stability["axial_disp"]) <= float(screw_axial_tol)
+            and stability["tilt_rad"] <= math.radians(float(screw_tilt_tol_deg))
+        )
+
+        if not screw_stable:
+            info["reason"] = "screw_displaced_or_tilted"
+            return _return(False)
 
         if require_contact:
-            contacts = self.bullet_client.getContactPoints(
-                bodyA=self.wrench_body_id,
-                bodyB=self.screw_obj_id,
-            )
-            wrench_contact_screw = len(contacts) > 0
-        else:
-            wrench_contact_screw = True
+            has_contact = self.has_wrench_screw_contact()
+            info["has_contact"] = bool(has_contact)
 
-        screw_angle_rad = abs(self.get_screw_rotation_about_initial_z())
-        rotated_enough = screw_angle_rad >= math.radians(float(rotation_threshold_deg))
+            if not has_contact:
+                info["reason"] = "lost_wrench_screw_contact"
+                return _return(False)
 
-        return bool(wrench_contact_screw and rotated_enough)
-
+        info["reason"] = "success"
+        return _return(True)
+    
     def enable_high_quality_rendering(self):
         try:
             self.bullet_client.configureDebugVisualizer(
