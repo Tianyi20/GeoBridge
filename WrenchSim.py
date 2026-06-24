@@ -388,7 +388,7 @@ class WrenchSim(object):
         self.wrench_constraint_id = None
 
         # wrench mesh
-        self.wrench_mesh_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_repaired.obj"
+        self.wrench_mesh_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_v2/wrench_attached_v2.obj"
 
         # 工具固定在哪个 robot link 上
         # 先用你当前的 EE link；如果发现不对，再换成 panda_hand 的 index，比如 8
@@ -399,7 +399,7 @@ class WrenchSim(object):
 
         # wrench mesh origin -> actual wrench TCP / socket center
         # 这个是 mesh 自己坐标系里的 socket TCP，不应该直接当 parent_to_tcp 用
-        self.wrench_to_tcp_pos = np.array([0.16417, 0.0, 0.0], dtype=float)
+        self.wrench_to_tcp_pos = np.array([0.11417, 0.0, 0.0], dtype=float)
         self.wrench_to_tcp_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
 
         if randomize_wrenchpose:
