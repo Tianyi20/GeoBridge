@@ -38,15 +38,15 @@ ul = [7] * pandaNumDofs
 jr = [7] * pandaNumDofs
 
 jointPositions = [
-    -0.12155781504648557,
-    -0.42671984664599694,
-    -0.00039830463755210403,
-    -2.487372174852445,
-    -0.00037976347864174736,
-    2.0591580293970186,
-    0.6636682670894513,
+    -0.09762531509002051,
+    -0.11921289903971187,
+    -0.0004173343487966217,
+    -2.1853378428408976,
+    -0.0002942036915626864,
+    2.064449508160775,
+    0.687251996585265,
     0.04,
-    0.04,
+    0.04
 ]
 rp = jointPositions
 
@@ -71,6 +71,7 @@ class WrenchSim(object):
         self.wrenchColorDR = ObjectColorDR(self.bullet_client, seed=seed+1)
         self.fpsaObjectDR = FPSAObjectDR(seed=seed)
         self.wrenchposeDR = PoseDR(self.bullet_client, seed=seed)
+        self.fisheyeCamDR = PoseDR(self.bullet_client, seed=seed)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -122,17 +123,13 @@ class WrenchSim(object):
         #   T_world_cam = T_world_eye_parent @ T_eye_parent_cam
         # User-provided physical meaning: camera is mounted on the Franka
         # panda_joint7 base coordinate, about +5.1 cm forward and -7.3 cm down.
-        self.T_eye_parent_cam = np.array([
-            [1, 0,  0,  0.05054945],
-            [0, 1, 0,  -0.00619893],
-            [0,  0,  1, 0.01294445],
-            [ 0.0,         0.0,         0.0,         1.0],
+        self.T_eye_base_parent_cam = np.array([
+            [0, -1, 0,  0.05054945],
+            [1,  0, 0, -0.00619893],
+            [0,  0, 1,  0.01294445],
+            [0,  0, 0,  1.0],
         ], dtype=np.float64)
-        
 
-        # PyBullet link index whose joint is panda_joint7 is normally 6.
-        # If your custom panda_wristcam.urdf has a different indexing, run
-        # print_panda_link_info() once and update this value accordingly.
         self.eye_parent_link = 8
     
         # Five 90-degree faces cover this KB4 camera. The farthest rays are just
@@ -411,6 +408,9 @@ class WrenchSim(object):
                    randomize_campose = True,
                    cam_xyz_jit  = 0.004,
                    cam_eul_jit  = 0.002,
+                   randomize_fisheye_cam = True,
+                   fisheye_eyz_jit = 0.005,
+                   fisheye_eul_jit = 0.002,
                    randomize_image_noise = True,
                    # manipulated object color / material randomization
                    randomize_object_color = True,
@@ -609,7 +609,23 @@ class WrenchSim(object):
             )
         else:
             self.extrinsic_cam = self.agentview_base_extrinsic_cam.copy()
-
+        
+        # fisheye camera pose jitter
+        if randomize_fisheye_cam:
+            self.T_eye_parent_cam = self.fisheyeCamDR.sample_SE3_randomization(
+                pos=self.T_eye_base_parent_cam[:3, 3],
+                orn=quat_from_rotation_matrix(self.T_eye_base_parent_cam[:3, :3]),
+                x_jitter_range=fisheye_eyz_jit,
+                y_jitter_range=fisheye_eyz_jit,
+                z_jitter_range=fisheye_eyz_jit,
+                x_euler_jitter_range=fisheye_eul_jit,
+                y_euler_jitter_range=fisheye_eul_jit,
+                z_euler_jitter_range=fisheye_eul_jit,
+                get_matrix=True,
+            )
+        else:
+            self.T_eye_parent_cam = self.T_eye_base_parent_cam.copy()
+        
         # Load background / outlier scene as visual-only.
         self.env_mesh = load_models(
             self.bullet_client,
@@ -739,10 +755,8 @@ class WrenchSim(object):
         self.target_gripper = self.GRIPPER_CLOSED
         self.reset_success_monitor()
 
-        T = self.get_eye_in_hand_T_world_cam()
-
-        self.debug_draw_axes(T, length= 0.1, life_time= 20000000)
-        time.sleep(20.0)
+        # T = self.get_eye_in_hand_T_world_cam()
+        # self.debug_draw_axes(T, length= 0.1, life_time= 20000000)
 
     def get_state_machine_ee_waypoints(self):
         """Approximate the wrench TCP path used by the screw-engagement state machine."""

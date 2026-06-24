@@ -140,15 +140,15 @@ def collect_dataset_from_phydomain_parallel(
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/storage/DP_data/wrench_engagement/20260621_154501/episodes"
-    out_path = "./data/DP_data/wrench_v2/wrench.zarr"
+    data_root = "/mnt/storage/DP_data/wrench_engagement/20260624_205521/episodes"
+    out_path = "./data/DP_data/wrench_fisheye/wrench.zarr"
 
     buffer = collect_dataset_from_phydomain_parallel(
         data_root,
         out_path,
         only_success=True,
-        use_eye_in_hand=False,
-        num_workers=20,
+        use_eye_in_hand=True,
+        num_workers=25,
     )
 
     print("done")

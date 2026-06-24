@@ -1,4 +1,4 @@
-from WrenchSim import WrenchSim
+from WrenchSim_equidistant_eye import WrenchSim
 import pybullet as p
 import os
 from episode_writer import EpisodeWriter
@@ -43,13 +43,16 @@ Sim.make_scene(
     wrench_xyz_jitter = 0.01,
     wrench_y_euler_jitter= 0.00,
     randomize_objpose  = True,
-    obj_x_jit    = 0.06,
-    obj_y_jit    = 0.1,
+    obj_x_jit    = 0.07,
+    obj_y_jit    = 0.07,
     obj_z_jit    = 0.05,
     obj_z_eul_jit = 0.0,
     randomize_campose = True,
     cam_xyz_jit  = 0.01,
     cam_eul_jit  = 0.005,
+    randomize_fisheye_cam = True,
+    fisheye_eyz_jit = 0.005,
+    fisheye_eul_jit = 0.002,
     randomize_image_noise= True,
     randomize_object_color = True,
     object_color_mode = "bounded",  # "bounded" or "recolor"
@@ -60,8 +63,8 @@ Sim.make_scene(
     randomize_distractors= True,
     distractor_root= "/mnt/storage/GoogleScannedObjects",
     distractor_num_range= (0, 5),
-    distractor_target_size_range= (0.06, 0.4),
-    distractor_workspace = ((-0.2, 0.8), (-0.72, 0.42)),
+    distractor_target_size_range= (0.2, 0.5),
+    distractor_workspace = ((-0.2, 1.3), (-0.72, 0.42)),
     # at least 10 pixel of the target object
     distractor_min_target_mask_pixels= 10,
     )
@@ -83,9 +86,12 @@ try:
         sim_step += 1
 
         if sim_step % record_every_n_sim_steps == 0:
-            _, _, RGB, _, _ = Sim.get_agentview_image()
-            cv2.imwrite("temp_rgb.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
-            obs = Sim.collect_observation()
+            # _, _, RGB, _, _ = Sim.get_eye_in_hand_image()
+            # RGB = Sim.get_eye_in_hand_image()
+
+            # cv2.imwrite("temp_rgb.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
+            obs = Sim.collect_observation(direct= True,
+                                          use_eye_in_hand= True)
 
             record_idx += 1
             # print(obs["robot0_gripper_qpos"])
