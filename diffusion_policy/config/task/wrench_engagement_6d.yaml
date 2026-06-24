@@ -1,4 +1,4 @@
-name: Wrench_Engagement
+name: Wrench_Engagement_rotation_6D
 
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
@@ -12,16 +12,16 @@ shape_meta: &shape_meta
     robot0_eef_pos:
       shape: [3]
       # type default: low_dim
-    robot0_eef_quat:
-      shape: [4]
+    robot0_eef_rot6d:
+      shape: [6]
     robot0_gripper_qpos:
       shape: [1]
-  action: 
-    shape: [8] # pos, quaternion, gripper
+  action:
+    shape: [10] # pos(3), rotation_6d(6), gripper(1)
 
 task_name: &task_name Wrench_Engagement
 dataset_type: &dataset_type ph
-dataset_path: &dataset_path ./data/DP_data/wrench_v4/wrench.zarr
+dataset_path: &dataset_path ./data/DP_data/wrench_v3/wrench.zarr
 abs_action: &abs_action True
 
 env_runner:
@@ -48,7 +48,7 @@ env_runner:
 # evaluation at this config requires a 26 core 128GB instance.
 
 dataset:
-  _target_: diffusion_policy.dataset.PhyAgentImageDataset.PhyAgentImageDataset
+  _target_: diffusion_policy.dataset.PhyAgentImage_6D_Dataset.PhyAgentImage_6D_Dataset
   zarr_path: *dataset_path
   # dataset_path: *dataset_path
   horizon: ${horizon}

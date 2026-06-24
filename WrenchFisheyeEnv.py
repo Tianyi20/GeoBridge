@@ -7,14 +7,14 @@ from icecream import ic
 import numpy as np
 import pybullet_utils.bullet_client as bc
 import pybullet as p
-from WrenchSim import WrenchSim
+from WrenchSim_equidistant_eye import WrenchSim
 
 
 class WrenchEnv(gym.Env):
     metadata = {"render.modes": []}
     def __init__(self, sim_steps_per_action=1,
                  connection_mode = p.DIRECT,
-                 seed=42,
+                 seed=46,
                  if_FPSA = False,
                  randomize_image_noise  = True,
                  randomize_objcolor = True,
@@ -60,9 +60,9 @@ class WrenchEnv(gym.Env):
             "agentview_image": spaces.Box(
                 low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
             ),
-            # "robot0_eye_in_hand_image": spaces.Box(
-            #     low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
-            # ),
+            "robot0_eye_in_hand_image": spaces.Box(
+                low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
+            ),
             "robot0_eef_pos": spaces.Box(
                 low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32
             ),
@@ -93,54 +93,54 @@ class WrenchEnv(gym.Env):
         self.sim.enable_high_quality_rendering()
 
         self.sim.make_scene(
-                env_mesh_path= "./data/background/repaired_table/tabletop.obj",
-                manipulated_obj_path= "./data/objects/screw/screw.obj",
-                manipulated_obj_collision_path = "./data/objects/screw/screw_collision_asset.obj",
-                clipper_obj_path   = "data/objects/clipper/clipper.obj",
-                initial_grasp_path = "data/objects/wrench/wrench_engage.yaml",
-                if_FPSA = self.if_FPSA,
-                fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
-                fpsa_include_base = True,
-                obj_pose_base = [0.75, -0.05, 0.25],
-                obj_euler_base = [0.0, 0.0, 0.0],# screw is a hexagon, 0-60 covers all space
-                randomize_lighting= self.randomize_lighting,
-                # outlier scene         
-                randomize_outlscene  = self.randomize_outlscene,
-                outlscene_xyz_jit    = 0.015,
-                outlscene_eul_jit    = 0.001,
-                # plane height randomization
-                randomize_plane_height = self.randomize_plane_height,
-                plane_height_jit = 0.002,
-                randomize_wrenchpose = self.randomize_wrenchpose,
-                wrench_xyz_jitter = 0.01,
-                wrench_y_euler_jitter= 0.00,
-                randomize_objpose  = self.randomize_objpose,
-                obj_x_jit    = 0.06,
-                obj_y_jit    = 0.1,
-                obj_z_jit    = 0.05,
-                obj_z_eul_jit = 0.0,
-                randomize_campose = self.randomize_campose,
-                cam_xyz_jit  = 0.01,
-                cam_eul_jit  = 0.005,
-                randomize_image_noise= self.randomize_image_noise,
-                randomize_object_color = self.randomize_objcolor,
-                object_color_mode = "bounded",  # "bounded" or "recolor"
-                object_color_strength = 0.5,
-                randomize_wrench_color = self.randomize_wrenchcolor,
-                wrench_color_mode= "bounded",
-                wrench_color_strength= 0.1,
-                randomize_distractors= self.randomize_distractors,
-                distractor_root= "/mnt/storage/GoogleScannedObjects",
-                distractor_num_range= (0, 5),
-                distractor_target_size_range= (0.06, 0.4),
-                distractor_workspace = ((-0.2, 0.8), (-0.72, 0.42)),
-                # at least 10 pixel of the target object
-                distractor_min_target_mask_pixels= 10,
-                )
+            env_mesh_path= "./data/background/repaired_table/tabletop.obj",
+            manipulated_obj_path= "./data/objects/screw/screw.obj",
+            manipulated_obj_collision_path = "./data/objects/screw/screw_collision_asset.obj",
+            clipper_obj_path   = "data/objects/clipper/clipper.obj",
+            initial_grasp_path = "data/objects/wrench/wrench_engage.yaml",
+            if_FPSA = False,
+            fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
+            fpsa_include_base = True,
+            obj_pose_base = [0.75, -0.05, 0.25],
+            obj_euler_base = [0.0, 0.0, 0.0],# screw is a hexagon, 0-60 covers all space
+            randomize_lighting= True,
+            # outlier scene         
+            randomize_outlscene  = True,
+            outlscene_xyz_jit    = 0.015,
+            outlscene_eul_jit    = 0.001,
+            # plane height randomization
+            randomize_plane_height = True,
+            plane_height_jit = 0.002,
+            randomize_wrenchpose = True,
+            wrench_xyz_jitter = 0.01,
+            wrench_y_euler_jitter= 0.00,
+            randomize_objpose  = True,
+            obj_x_jit    = 0.06,
+            obj_y_jit    = 0.1,
+            obj_z_jit    = 0.05,
+            obj_z_eul_jit = 0.0,
+            randomize_campose = True,
+            cam_xyz_jit  = 0.01,
+            cam_eul_jit  = 0.005,
+            randomize_image_noise= True,
+            randomize_object_color = True,
+            object_color_mode = "bounded",  # "bounded" or "recolor"
+            object_color_strength = 0.5,
+            randomize_wrench_color = True,
+            wrench_color_mode= "bounded",
+            wrench_color_strength= 0.1,
+            randomize_distractors= True,
+            distractor_root= "/mnt/storage/GoogleScannedObjects",
+            distractor_num_range= (0, 5),
+            distractor_target_size_range= (0.06, 0.4),
+            distractor_workspace = ((-0.2, 0.8), (-0.72, 0.42)),
+            # at least 10 pixel of the target object
+            distractor_min_target_mask_pixels= 10,
+        )
 
     def reset(self):
         self._build_sim()
-        obs = self.sim.collect_observation()
+        obs = self.sim.collect_observation(direct= True, use_eye_in_hand= True)
         self._last_obs = obs
         return obs
 
@@ -169,7 +169,7 @@ class WrenchEnv(gym.Env):
             self._pybullet_client.stepSimulation()
 
         # use native get obs and is success
-        obs = self.sim.collect_observation(direct= False)
+        obs = self.sim.collect_observation(direct= True, use_eye_in_hand= True)
         self._last_obs = obs
         done = self.sim.is_success()
         # reward is done, sparse reward
@@ -184,7 +184,18 @@ class WrenchEnv(gym.Env):
         return obs, reward, done, info
 
     def render(self, mode='rgb_array'):
-        return self._last_obs["agentview_image"]
+        obs = self._last_obs
+
+        base_img = obs["agentview_image"]
+        eye_img = obs["robot0_eye_in_hand_image"]
+
+        gap = 16  # 留白宽度
+        h = base_img.shape[0]
+
+        # 白色留白条
+        spacer = np.full((h, gap, 3), 255, dtype=np.uint8)
+
+        return np.concatenate([base_img, spacer, eye_img], axis=1)
 
     def close(self):
         if self._pybullet_client is not None:
