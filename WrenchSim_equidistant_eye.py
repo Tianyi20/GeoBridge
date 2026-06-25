@@ -764,7 +764,7 @@ class WrenchSim(object):
             engage_pos,
             engage_orn,
             local_axis=np.array([1.0, 0.0, 0.0], dtype=float),
-            distance=-self.safe_approach,
+            distance=-(self.safe_approach + 0.05),
         )
 
         fasten_orn = self.rotate_quat_about_local_z(

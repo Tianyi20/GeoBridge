@@ -206,12 +206,13 @@ def collect_episode_in_worker(
         randomize_distractors= True,
         distractor_root= "/mnt/storage/GoogleScannedObjects",
         distractor_num_range= (0, 5),
-        distractor_target_size_range= (0.2, 0.5),
+        distractor_target_size_range= (0.1, 0.5),
         distractor_workspace = ((-0.2, 1.3), (-0.72, 0.42)),
-        distractor_clearance = 0.04,
+        distractor_clearance = 0.07,
+        distractor_path_clearance = 0.07,
         # at least 10 pixel of the target object
         distractor_min_target_mask_pixels= 10,
-        )
+    )
     sim.enable_high_quality_rendering()
 
     try:
