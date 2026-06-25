@@ -382,6 +382,7 @@ class WrenchSim(object):
                    env_mesh_path        = None,
                    manipulated_obj_path = None,
                    manipulated_obj_collision_path = None,
+                   wrench_mesh_path = None,
                    clipper_obj_path     = None,
                    initial_grasp_path = None,
                    if_FPSA = False,
@@ -427,7 +428,7 @@ class WrenchSim(object):
                    distractor_num_range = (1, 5),
                    distractor_target_size_range = (0.06, 0.16),
                    distractor_workspace = ((0.25, 0.78), (-0.42, 0.42)),
-                   distractor_clearance = 0.035,
+                   distractor_clearance = 0.04,
                    distractor_path_clearance = 0.04,
                    distractor_min_target_mask_pixels = 1,
                    ):
@@ -446,7 +447,7 @@ class WrenchSim(object):
         self.wrench_constraint_id = None
 
         # wrench mesh
-        self.wrench_mesh_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_v2/wrench_attached_v2.obj"
+        self.wrench_mesh_path = wrench_mesh_path
 
         # 工具固定在哪个 robot link 上
         # 先用你当前的 EE link；如果发现不对，再换成 panda_hand 的 index，比如 8
@@ -729,9 +730,7 @@ class WrenchSim(object):
                 # distractors should spawn relative to the actual current ground plane, not world z=0.
                 ground_z=float(ground_pose[2]),
                 spawn_clearance=0.005,
-                # Keep this false by default. Full robot-plan IK rejection is very sensitive to
-                # randomized scene/ground pose and can reject almost every candidate.
-                check_robot_plan=False,
+                check_robot_plan=True, # keep this always true
                 check_xy_safety=True,
                 min_visible_fraction=0.55,
                 debug=False,
@@ -754,9 +753,6 @@ class WrenchSim(object):
         # and static distractor loading are finished.
         self.target_gripper = self.GRIPPER_CLOSED
         self.reset_success_monitor()
-
-        # T = self.get_eye_in_hand_T_world_cam()
-        # self.debug_draw_axes(T, length= 0.1, life_time= 20000000)
 
     def get_state_machine_ee_waypoints(self):
         """Approximate the wrench TCP path used by the screw-engagement state machine."""

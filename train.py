@@ -2,6 +2,8 @@
 Usage:
 Training:
 python train.py --config-name=PhyDomain_AgentImage_workspace
+python train.py --config-name=PhyDomain_FishEye_workspace
+
 """
 
 import sys
