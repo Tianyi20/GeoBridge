@@ -7,7 +7,7 @@ import slippage_reshaping as sr
 from pathlib import Path
 import open3d as o3d
 from ultility import load_initial_grasp_pose, coacd_convex_decomposition
-
+from icecream import ic
 
 class ShapeAugmentor:
     def __init__(self, obj_path, initial_grasp_path=None):
@@ -204,6 +204,7 @@ class ShapeAugmentor:
         max_iters=20,
         handle_error_distrib_enabled=False,
         input_name=None,
+        reshape_method="slippage"
     ):
         constraint_ids = list(constraint_ids)
         displace_idxs = list(displace_idxs)
@@ -230,14 +231,24 @@ class ShapeAugmentor:
             row = constraint_ids.index(vid)
             target_positions[row] += disp
 
-
-        return self.slippage_reshape(
-            constraint_ids=constraint_ids,
-            target_positions=target_positions,
-            max_iters=max_iters,
-            handle_error_distrib_enabled=handle_error_distrib_enabled,
-            input_name=input_name,
-        )
+        if reshape_method == "slippage":
+            return self.slippage_reshape(
+                constraint_ids=constraint_ids,
+                target_positions=target_positions,
+                max_iters=max_iters,
+                handle_error_distrib_enabled=handle_error_distrib_enabled,
+                input_name=input_name,
+            )
+        elif reshape_method == "APAP":
+            return self.APAP_reshape(
+                constraint_ids=constraint_ids,
+                target_positions=target_positions,
+                max_iters=max_iters,
+                handle_error_distrib_enabled=handle_error_distrib_enabled,
+                input_name=input_name,
+            )
+        else:
+            raise ValueError(f"Unknown reshape_method: {reshape_method}. Supported: 'slippage', 'APAP'")
 
     def write_augment_obj(self, output_path, write_coacd=True, return_paths=False):
         if self.V_opt is None:
@@ -257,6 +268,57 @@ class ShapeAugmentor:
         if return_paths:
             return str(output_path), coacd_output_path
         return None
+    
+
+    # ============================================================
+    # APAP deformation
+    # ============================================================
+    def APAP_reshape(self, 
+                     constraint_ids,
+                     target_positions=None,
+                     max_iters=20,
+                     handle_error_distrib_enabled=False,
+                     input_name=None,
+                     ):
+        """constraint_ids= [339, 343, 345, 346, 846],
+                                   displace_idxs= [846],
+                                   displacements= np.array([0.21873721885442937,
+                                                        -4.568995076824393e-09,
+                                                        -8.609569257000194e-10]),
+                                    max_iters= 100
+        """
+        if target_positions is None:
+            raise ValueError("target_positions must be provided")
+
+        target_positions = np.asarray(target_positions, dtype=np.float64)
+        if target_positions.shape != (len(constraint_ids), 3):
+            raise ValueError(
+                f"target_positions must have shape {(len(constraint_ids), 3)}, "
+                f"got {target_positions.shape}"
+            )
+        
+        mesh = o3d.geometry.TriangleMesh()
+        mesh.vertices = o3d.utility.Vector3dVector(self.V)
+        mesh.triangles = o3d.utility.Vector3iVector(self.F)
+        mesh.compute_triangle_normals()
+        mesh.compute_vertex_normals()
+
+        ic(constraint_ids, target_positions)
+        ic(self.V[constraint_ids])
+
+        constraint_ids_o3d = o3d.utility.IntVector([int(i) for i in constraint_ids])
+        target_positions_o3d = o3d.utility.Vector3dVector(
+            np.asarray(target_positions, dtype=np.float64)
+        )
+
+        with o3d.utility.VerbosityContextManager(
+                o3d.utility.VerbosityLevel.Debug) as cm:
+            mesh_prime = mesh.deform_as_rigid_as_possible(constraint_ids_o3d,
+                                                        target_positions_o3d,
+                                                        max_iter=max_iters)
+
+        self.V_opt = np.asarray(mesh_prime.vertices, dtype=np.float64)
+        return self.V_opt
 
     # ============================================================
     # Cached COACD deformation transfer
