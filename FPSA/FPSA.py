@@ -52,8 +52,9 @@ class ShapeAugmentor:
         self.V = np.asarray(self.mesh.vertices, dtype=np.float64)
         self.F = np.asarray(self.mesh.faces, dtype=np.int64)
 
-        # Any mesh topology/face update invalidates cached adjacency.
+        # Any mesh topology/face update invalidates cached adjacency / KDTree.
         self._vertex_adj = None
+        self._vertex_kdtree = None
 
         if self.F.ndim != 2 or self.F.shape[1] != 3:
             raise ValueError(f"Input mesh must be triangulated, got F.shape={self.F.shape}")
@@ -635,9 +636,32 @@ class ShapeAugmentor:
 
         return np.array(sorted(visited), dtype=np.int64)
 
-    def closest_surface_anchor(self, point, k_ring=2):
+    def get_xyz_nearest_vertices(self, point, num_vertices=32):
+        """Return vertex ids nearest to point in xyz Euclidean space."""
+        point = np.asarray(point, dtype=np.float64).reshape(1, 3)
+        num_vertices = int(min(num_vertices, len(self.V)))
+
+        if self._vertex_kdtree is None:
+            from scipy.spatial import cKDTree
+            self._vertex_kdtree = cKDTree(self.V)
+
+        _, vertex_ids = self._vertex_kdtree.query(point, k=num_vertices)
+        return np.asarray(vertex_ids, dtype=np.int64).reshape(-1)
+
+    def closest_surface_anchor(
+        self,
+        point,
+        k_ring=2,
+        patch_method="k_ring",
+        num_patch_vertices=32,
+    ):
         """
         Project a 3D point to the original mesh surface and create an anchor.
+
+        Args:
+            patch_method:
+                "k_ring": use topological k-ring around the closest face.
+                "xyz": use KDTree xyz-nearest vertices around the input point/TCP.
 
         Returns:
             anchor = {
@@ -647,6 +671,7 @@ class ShapeAugmentor:
                 "patch_vertex_ids": [...],
                 "source_point_old": [x, y, z],
                 "k_ring": int,
+                "patch_method": str,
             }
         """
         point = np.asarray(point, dtype=np.float64).reshape(1, 3)
@@ -664,7 +689,21 @@ class ShapeAugmentor:
         a, b, c = self.V[tri[0]], self.V[tri[1]], self.V[tri[2]]
         bary = self._point_triangle_barycentric(anchor_point_old, a, b, c)
 
-        patch_vertex_ids = self.get_k_ring_vertices(seed_vertex_ids=tri, k_ring=k_ring)
+        if patch_method == "k_ring":
+            patch_vertex_ids = self.get_k_ring_vertices(
+                seed_vertex_ids=tri,
+                k_ring=k_ring,
+            )
+        elif patch_method in ("xyz", "xyz_nearest", "kdtree"):
+            patch_vertex_ids = self.get_xyz_nearest_vertices(
+                point=point,
+                num_vertices=num_patch_vertices,
+            )
+        else:
+            raise ValueError(
+                f"Unknown patch_method={patch_method}. "
+                "Supported: 'k_ring', 'xyz'/'xyz_nearest'/'kdtree'."
+            )
 
         return {
             "face_id": face_id,
@@ -673,6 +712,8 @@ class ShapeAugmentor:
             "patch_vertex_ids": patch_vertex_ids.tolist(),
             "source_point_old": point.reshape(3).tolist(),
             "k_ring": int(k_ring),
+            "patch_method": str(patch_method),
+            "num_patch_vertices": int(len(patch_vertex_ids)),
             "squared_distance_to_mesh": float(sqrD[0]),
         }
 
@@ -930,7 +971,14 @@ class ShapeAugmentor:
     # SE(3) grasp transfer
     # ============================================================
 
-    def make_grasp_anchor_from_SE3(self, T_grasp_old=None, k_ring=2, quat_order="xyzw"):
+    def make_grasp_anchor_from_SE3(
+        self,
+        T_grasp_old=None,
+        k_ring=2,
+        quat_order="xyzw",
+        patch_method="k_ring",
+        num_patch_vertices=32,
+    ):
         """
         Build and return the surface anchor for an old SE(3) grasp pose.
 
@@ -940,7 +988,12 @@ class ShapeAugmentor:
         """
         T_grasp_old = self.grasp_guess_to_SE3(T_grasp_old, quat_order=quat_order)
         tcp_old = T_grasp_old[:3, 3]
-        return self.closest_surface_anchor(point=tcp_old, k_ring=k_ring)
+        return self.closest_surface_anchor(
+            point=tcp_old,
+            k_ring=k_ring,
+            patch_method=patch_method,
+            num_patch_vertices=num_patch_vertices,
+        )
 
     def transfer_grasp_SE3_by_anchor(
         self,
@@ -1031,6 +1084,8 @@ class ShapeAugmentor:
         k_ring=2,
         use_distance_weights=True,
         quat_order="xyzw",
+        patch_method="k_ring",
+        num_patch_vertices=32,
     ):
         """
         Public API for SE(3) grasp transfer.
@@ -1044,6 +1099,10 @@ class ShapeAugmentor:
                 Optional precomputed anchor. If None, this function creates one
                 from the old TCP position.
 
+            patch_method:
+                "k_ring": use topological k-ring around the closest face. 
+                "xyz": use KDTree xyz-nearest vertices around the input point/TCP.                
+
         Returns:
             T_grasp_new, anchor, debug_info
         """
@@ -1053,8 +1112,11 @@ class ShapeAugmentor:
             anchor = self.closest_surface_anchor(
                 point=T_grasp_old[:3, 3],
                 k_ring=k_ring,
+                patch_method=patch_method,
+                num_patch_vertices=num_patch_vertices,
             )
 
+        # ic(anchor)
         T_grasp_new, debug_info = self.transfer_grasp_SE3_by_anchor(
             T_grasp_old=T_grasp_old,
             anchor=anchor,
@@ -1202,8 +1264,6 @@ class ShapeAugmentor:
         T_grasp_new=None,
         anchor=None,
         debug_info=None,
-        k_ring=2,
-        use_distance_weights=True,
         quat_order="xyzw",
         axis_size=None,
         show_anchor=True,
@@ -1242,21 +1302,6 @@ class ShapeAugmentor:
             raise ValueError(
                 "No optimized vertices found. Run slippage_reshape() or "
                 "displacement_reshape() before visualization."
-            )
-
-        # Auto-compute transferred grasp pose if not provided.
-        if T_grasp_new is None:
-            T_grasp_new, anchor, debug_info = self.transfer_grasp_SE3(
-                T_grasp_old=None,
-                anchor=anchor,
-                k_ring=k_ring,
-                use_distance_weights=use_distance_weights,
-                quat_order=quat_order,
-            )
-        else:
-            T_grasp_new = self.grasp_guess_to_SE3(
-                T_grasp_new,
-                quat_order=quat_order,
             )
 
         scale = self._default_vis_scale()
@@ -1302,16 +1347,10 @@ class ShapeAugmentor:
         # 4. Optional old grasp pose axis, shown in original mesh frame.
         # This is only for visual comparison. It is not transformed to V_opt.
         if show_old_grasp:
-            if T_grasp_old is None:
-                T_grasp_old = self.grasp_guess_to_SE3(
-                    None,
-                    quat_order=quat_order,
-                )
-            else:
-                T_grasp_old = self.grasp_guess_to_SE3(
-                    T_grasp_old,
-                    quat_order=quat_order,
-                )
+            T_grasp_old = self.grasp_guess_to_SE3(
+                T_grasp_old,
+                quat_order=quat_order,
+            )
             old_axis = self._make_pose_axis(T_grasp_old, axis_size=0.75 * axis_size)
             geoms.append(old_axis)
 
