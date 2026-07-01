@@ -125,17 +125,19 @@ class L515Camera:
     def __init__(self, serial: str,
                  color_width=960, color_height=540,
                  depth_width=640, depth_height=480,
-                 fps=30):
+                 fps=30, enable_depth: bool = True):
         import pyrealsense2 as rs
         self.serial = serial
         self._rs = rs
+        self._enable_depth = enable_depth
         self._lock = threading.Lock()
         self._color = None
         self._depth = None
         self._running = False
 
         self._pipeline = rs.pipeline()
-        self._align = rs.align(rs.stream.color)
+        # Align is only meaningful when depth is streamed; color-only skips it.
+        self._align = rs.align(rs.stream.color) if enable_depth else None
 
         profiles = [(color_width, color_height, depth_width, depth_height, fps)] + self._PROFILES
         started = False
@@ -143,10 +145,14 @@ class L515Camera:
             cfg = rs.config()
             cfg.enable_device(serial)
             cfg.enable_stream(rs.stream.color, cw, ch, rs.format.rgb8, f)
-            cfg.enable_stream(rs.stream.depth, dw, dh, rs.format.z16, f)
+            if enable_depth:
+                cfg.enable_stream(rs.stream.depth, dw, dh, rs.format.z16, f)
             if cfg.can_resolve(self._pipeline):
                 self._pipeline.start(cfg)
-                print(f"[L515 {serial}] opened: color {cw}x{ch}, depth {dw}x{dh} @ {f}fps")
+                if enable_depth:
+                    print(f"[L515 {serial}] opened: color {cw}x{ch}, depth {dw}x{dh} @ {f}fps")
+                else:
+                    print(f"[L515 {serial}] opened: color {cw}x{ch} @ {f}fps (color-only, depth disabled)")
                 started = True
                 break
         if not started:
@@ -161,17 +167,29 @@ class L515Camera:
         while self._running:
             try:
                 frames = self._pipeline.wait_for_frames(timeout_ms=2000)
-                aligned = self._align.process(frames)
-                color = np.asarray(aligned.get_color_frame().get_data())
-                depth = np.asarray(aligned.get_depth_frame().get_data())
-                with self._lock:
-                    self._color = color
-                    self._depth = depth
+                if self._enable_depth:
+                    aligned = self._align.process(frames)
+                    color = np.asarray(aligned.get_color_frame().get_data())
+                    depth = np.asarray(aligned.get_depth_frame().get_data())
+                    with self._lock:
+                        self._color = color
+                        self._depth = depth
+                else:
+                    # Color-only: no align, no depth (self._depth stays None).
+                    color_frame = frames.get_color_frame()
+                    if not color_frame:
+                        continue
+                    color = np.asarray(color_frame.get_data())
+                    with self._lock:
+                        self._color = color
             except Exception as e:
                 print(f"[L515 {self.serial}] frame error: {e}")
 
     def get(self):
-        """Return (color_rgb_uint8, depth_uint16) or (None, None)."""
+        """Return (color_rgb_uint8, depth_uint16) or (None, None).
+
+        depth is always None when the camera was opened with enable_depth=False.
+        """
         with self._lock:
             return (self._color.copy() if self._color is not None else None,
                     self._depth.copy() if self._depth is not None else None)
