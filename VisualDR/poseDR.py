@@ -65,7 +65,7 @@ class PoseDR:
         delta_R = R.from_euler("xyz", euler_jitter)
 
         # local-frame rotation perturbation
-        rotDR = delta_R * base_R 
+        rotDR = base_R * delta_R
         ornDR = rotDR.as_quat()
         
         if get_matrix:
