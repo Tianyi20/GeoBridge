@@ -35,6 +35,13 @@ class ShapeAugmentor:
         self._coacd_template_parts = None
 
         self._sync_arrays()
+        """ 
+        self.V        # 原始 reference mesh，用于 grasp transfer / COACD barycentric binding
+        self.V_ref    # 原始 mesh 的 copy
+        self.V_work   # 当前链式 reshape 的工作 mesh，下一次 reshape 从这里开始
+        self.V_opt    # 最近一次 / 最终 reshape 结果
+        """
+        self.V_work = self.V.copy()
 
         if not self.is_manifold():
             print("Input mesh is not manifold. Running safe in-place repair...")
@@ -80,15 +87,14 @@ class ShapeAugmentor:
             and status["orientable"]
         )
 
-
-
     # ============================================================
     # Slippage-preserving reshaping
     # ============================================================
 
     def get_fk(self, radius=5, use_k_ring=True):
+        V_in = self.V_work
         result = igl.principal_curvature(
-            self.V,
+            V_in,
             self.F,
             radius,
             use_k_ring,
@@ -150,10 +156,11 @@ class ShapeAugmentor:
         # This block makes the conversion explicit while keeping the public Python
         # interface absolute-scale.
         # ------------------------------------------------------------
-        constraint_vertices = self.V[constraint_ids].copy()
+        V_in = self.V_work
+        constraint_vertices = V_in[constraint_ids].copy()
 
-        bbox_min = self.V.min(axis=0)
-        bbox_max = self.V.max(axis=0)
+        bbox_min = V_in.min(axis=0)
+        bbox_max = V_in.max(axis=0)
         bbox_diag = np.linalg.norm(bbox_max - bbox_min)
 
         if bbox_diag <= 0.0:
@@ -171,7 +178,7 @@ class ShapeAugmentor:
         face_k1, face_k2 = self.get_fk()
 
         V_opt_raw = sr.optimize_mesh(
-            self.V,
+            V_in,
             self.F,
             face_k1,
             face_k2,
@@ -186,15 +193,21 @@ class ShapeAugmentor:
         # same normalized units used internally by FPSA.  Convert the final mesh
         # back to the real object scale before exporting / COACD transfer / grasp
         # transfer:
-        #     V_opt = V + (V_opt_raw - V) * bbox_diag
+        #     V_new = V_in + (V_opt_raw - V_in) / bbox_diag
         V_opt_raw = np.asarray(V_opt_raw, dtype=np.float64)
-        if V_opt_raw.shape != self.V.shape:
+        if V_opt_raw.shape != V_in.shape:
             raise ValueError(
                 f"optimize_mesh returned V_opt with shape {V_opt_raw.shape}, "
-                f"expected {self.V.shape}"
+                f"expected {V_in.shape}"
             )
 
-        self.V_opt = self.V + (V_opt_raw - self.V) / bbox_diag
+        V_new = V_in + (V_opt_raw - V_in) / bbox_diag
+
+        self.V_opt = V_new.copy()
+        self.V_work = V_new.copy()
+        self.face_k1 = None
+        self.face_k2 = None
+        self._vertex_kdtree = None
         return self.V_opt
 
     def displacement_reshape(
@@ -205,7 +218,7 @@ class ShapeAugmentor:
         max_iters=20,
         handle_error_distrib_enabled=False,
         input_name=None,
-        reshape_method="slippage"
+        reshape_method="slippage",
     ):
         constraint_ids = list(constraint_ids)
         displace_idxs = list(displace_idxs)
@@ -224,7 +237,8 @@ class ShapeAugmentor:
                 f"got {displacements.shape}"
             )
 
-        target_positions = self.V[constraint_ids].copy()
+        V_in = self.V_work
+        target_positions = V_in[constraint_ids].copy()
         for vid, disp in zip(displace_idxs, displacements):
             if vid not in constraint_ids:
                 raise ValueError(f"displace_idxs must be a subset of constraint_ids, got {vid}")
@@ -232,7 +246,9 @@ class ShapeAugmentor:
             row = constraint_ids.index(vid)
             target_positions[row] += disp
 
-        if reshape_method == "slippage":
+        method = str(reshape_method).lower()
+
+        if method == "slippage":
             return self.slippage_reshape(
                 constraint_ids=constraint_ids,
                 target_positions=target_positions,
@@ -240,7 +256,7 @@ class ShapeAugmentor:
                 handle_error_distrib_enabled=handle_error_distrib_enabled,
                 input_name=input_name,
             )
-        elif reshape_method == "APAP":
+        elif method == "apap":
             return self.APAP_reshape(
                 constraint_ids=constraint_ids,
                 target_positions=target_positions,
@@ -253,7 +269,7 @@ class ShapeAugmentor:
 
     def write_augment_obj(self, output_path, write_coacd=True, return_paths=False):
         if self.V_opt is None:
-            raise ValueError("No optimized vertices found. Please run slippage_reshape() first.")
+            raise ValueError("No optimized vertices found. Please run a reshape method first.")
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,14 +314,16 @@ class ShapeAugmentor:
                 f"got {target_positions.shape}"
             )
         
+        V_in = self.V_work
+
         mesh = o3d.geometry.TriangleMesh()
-        mesh.vertices = o3d.utility.Vector3dVector(self.V)
+        mesh.vertices = o3d.utility.Vector3dVector(V_in)
         mesh.triangles = o3d.utility.Vector3iVector(self.F)
         mesh.compute_triangle_normals()
         mesh.compute_vertex_normals()
 
         ic(constraint_ids, target_positions)
-        ic(self.V[constraint_ids])
+        ic(V_in[constraint_ids])
 
         constraint_ids_o3d = o3d.utility.IntVector([int(i) for i in constraint_ids])
         target_positions_o3d = o3d.utility.Vector3dVector(
@@ -318,7 +336,17 @@ class ShapeAugmentor:
                                                         target_positions_o3d,
                                                         max_iter=max_iters)
 
-        self.V_opt = np.asarray(mesh_prime.vertices, dtype=np.float64)
+        V_new = np.asarray(mesh_prime.vertices, dtype=np.float64)
+        if V_new.shape != V_in.shape:
+            raise ValueError(
+                f"APAP returned V_new with shape {V_new.shape}, expected {V_in.shape}"
+            )
+
+        self.V_opt = V_new.copy()
+        self.V_work = V_new.copy()
+        self.face_k1 = None
+        self.face_k2 = None
+        self._vertex_kdtree = None
         return self.V_opt
 
     # ============================================================
@@ -519,7 +547,7 @@ class ShapeAugmentor:
         the scene into one object group.
         """
         if self.V_opt is None:
-            raise ValueError("No optimized vertices found. Please run slippage_reshape() first.")
+            raise ValueError("No optimized vertices found. Please run a reshape method first.")
 
         if output_path is None:
             if obj_filename is None:
@@ -1025,7 +1053,7 @@ class ShapeAugmentor:
             t_new = anchor_new + R_patch @ (t_old - anchor_old)
         """
         if self.V_opt is None:
-            raise ValueError("No optimized vertices found. Run slippage_reshape() first.")
+            raise ValueError("No optimized vertices found. Run a reshape method first.")
 
         T_grasp_old = self.grasp_guess_to_SE3(T_grasp_old, quat_order=quat_order)
         R_old = T_grasp_old[:3, :3]
@@ -1259,19 +1287,30 @@ class ShapeAugmentor:
             diag = 1.0
         return diag
 
+    def visualize_reshaped_mesh(self):
+        mesh_def = self._make_o3d_mesh_from_vertices(
+            self.V_opt,
+            color=(0.72, 0.72, 0.72),
+        )
+        world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0, 0, 0])
+
+        o3d.visualization.draw_geometries(
+            [mesh_def, world_frame],
+            window_name="deformed mesh",
+            width=1280,
+            height=900,
+        )
+
     def visualize_deformed_grasp_pose(
         self,
         T_grasp_new=None,
         anchor=None,
         debug_info=None,
         quat_order="xyzw",
-        axis_size=None,
         show_anchor=True,
         show_patch=True,
         show_old_grasp=False,
         T_grasp_old=None,
-        window_name="Deformed mesh with transferred grasp pose",
-        return_geometries=False,
     ):
         """
         Visualize deformed mesh + transferred SE(3) grasp pose.
@@ -1288,9 +1327,6 @@ class ShapeAugmentor:
                 debug_info=debug,
             )
 
-        If T_grasp_new is None, this function will automatically call
-        transfer_grasp_SE3(...) using self.initial_grasp_guess.
-
         Visual elements:
             - deformed mesh: self.V_opt
             - RGB axis frame: transferred grasp TCP pose
@@ -1305,8 +1341,7 @@ class ShapeAugmentor:
             )
 
         scale = self._default_vis_scale()
-        if axis_size is None:
-            axis_size = 0.08 * scale
+        axis_size = 0.2 * scale
         marker_radius = 0.012 * scale
 
         geoms = []
@@ -1363,12 +1398,12 @@ class ShapeAugmentor:
             if "num_patch_vertices" in debug_info:
                 print(f"  num_patch_vertices: {debug_info['num_patch_vertices']}")
 
-        if return_geometries:
-            return geoms
+        world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0, 0, 0])
+        geoms.append(world_frame)
 
         o3d.visualization.draw_geometries(
             geoms,
-            window_name=window_name,
+            window_name="Deformed mesh with transferred grasp pose",
             width=1280,
             height=900,
         )
