@@ -12,6 +12,7 @@ ROBOT_PORT = 4242              # ZeroRPC server port
 L515_SERIALS = ['f1480807', 'f1471315']   # Intel RealSense L515 serial numbers
 FISHEYE_USB_ID = '32e4:9230'              # USB vendor:product ID for fisheye camera
 FISHEYE_RESOLUTION = (640, 480)
+FISHEYE_FOURCC = 'YUYV'        # YUYV @ 640x480 = full fisheye FOV (MJPG 640x480 is a cropped ROI)
 
 # ==================== Robot Control ====================
 CONTROL_FREQUENCY = 10         # Hz

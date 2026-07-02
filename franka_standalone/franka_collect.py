@@ -46,6 +46,7 @@ from config import (
     KX_DEFAULT, KXD_DEFAULT,
     TX_FLANGE_TIP, TX_TIP_FLANGE,
     L515_SERIALS, FISHEYE_USB_ID, FISHEYE_RESOLUTION,
+    FISHEYE_FOURCC,
 )
 
 
@@ -111,21 +112,13 @@ class FrankaClient:
 # ======================== Cameras ========================
 
 class L515Camera:
-    """Thread-based Intel RealSense L515 camera reader."""
+    """Thread-based Intel RealSense L515 camera reader.
 
-    # (color_w, color_h, depth_w, depth_h, fps) — ordered from preferred to fallback
-    _PROFILES = [
-        (960, 540, 640, 480, 30),   # matches l515_camera.py defaults
-        (960, 540, 640, 480, 15),
-        (640, 480, 640, 480, 30),
-        (640, 480, 640, 480, 15),
-        (320, 240, 320, 240, 30),
-    ]
+    Fixed profile: color 960x540 @ 30fps, plus depth 640x480 when
+    ``enable_depth=True`` (data collection); deploy uses color-only.
+    """
 
-    def __init__(self, serial: str,
-                 color_width=960, color_height=540,
-                 depth_width=640, depth_height=480,
-                 fps=30, enable_depth: bool = True):
+    def __init__(self, serial: str, enable_depth: bool = True):
         import pyrealsense2 as rs
         self.serial = serial
         self._rs = rs
@@ -133,31 +126,25 @@ class L515Camera:
         self._lock = threading.Lock()
         self._color = None
         self._depth = None
-        self._running = False
 
         self._pipeline = rs.pipeline()
         # Align is only meaningful when depth is streamed; color-only skips it.
         self._align = rs.align(rs.stream.color) if enable_depth else None
 
-        profiles = [(color_width, color_height, depth_width, depth_height, fps)] + self._PROFILES
-        started = False
-        for cw, ch, dw, dh, f in profiles:
-            cfg = rs.config()
-            cfg.enable_device(serial)
-            cfg.enable_stream(rs.stream.color, cw, ch, rs.format.rgb8, f)
-            if enable_depth:
-                cfg.enable_stream(rs.stream.depth, dw, dh, rs.format.z16, f)
-            if cfg.can_resolve(self._pipeline):
-                self._pipeline.start(cfg)
-                if enable_depth:
-                    print(f"[L515 {serial}] opened: color {cw}x{ch}, depth {dw}x{dh} @ {f}fps")
-                else:
-                    print(f"[L515 {serial}] opened: color {cw}x{ch} @ {f}fps (color-only, depth disabled)")
-                started = True
-                break
-        if not started:
+        cfg = rs.config()
+        cfg.enable_device(serial)
+        cfg.enable_stream(rs.stream.color, 960, 540, rs.format.rgb8, 30)
+        if enable_depth:
+            cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        if not cfg.can_resolve(self._pipeline):
             raise RuntimeError(
-                f"No supported profile found. Check USB 3.0 connection and firmware.")
+                f"[L515 {serial}] cannot open color 960x540"
+                f"{' + depth 640x480' if enable_depth else ''} @ 30fps"
+                f" — check USB 3.0 connection and firmware.")
+        self._pipeline.start(cfg)
+        mode = ('color 960x540 + depth 640x480' if enable_depth
+                else 'color 960x540 (color-only)')
+        print(f"[L515 {serial}] opened: {mode} @ 30fps")
 
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -201,29 +188,62 @@ class L515Camera:
 
 
 class FisheyeCamera:
-    """Thread-based USB camera reader."""
+    """Thread-based USB UVC camera reader opened DIRECTLY at 640x480 YUYV.
 
-    def __init__(self, device, width=640, height=480):
+    On this fisheye cam, MJPG @ 640x480 is a cropped/zoomed sensor ROI (narrow
+    FOV), while YUYV @ 640x480 delivers the FULL fisheye FOV that matches the
+    training reference. So we request the YUYV 640x480 mode DIRECTLY from the
+    camera — no higher-native capture, no downscale, no resolution conversion.
+    """
+
+    def __init__(self, device, width=640, height=480, fps=30):
         self._lock = threading.Lock()
         self._color = None
-        self._running = False
 
-        self._cap = cv2.VideoCapture(device)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self._width = int(width)
+        self._height = int(height)
+
+        self._cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open camera {device}")
+
+        # FOURCC=YUYV must be set BEFORE the size: on this fisheye cam the YUYV
+        # 640x480 mode is the FULL-FOV mode (the MJPG 640x480 mode is a cropped
+        # ROI). V4L2's standard fourcc for this format is 'YUYV'.
+        self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*FISHEYE_FOURCC))
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        self._cap.set(cv2.CAP_PROP_FPS, fps)
+
+        # Log the ACTUAL negotiated mode so a mismatch is visible on hardware.
+        act_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        act_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        act_fourcc = self._decode_fourcc(self._cap.get(cv2.CAP_PROP_FOURCC))
+        print(f"[Fisheye {device}] opened: {act_w}x{act_h} {act_fourcc} @ {fps}fps")
+        if (act_w, act_h) != (self._width, self._height) or act_fourcc != FISHEYE_FOURCC:
+            print(f"[Fisheye {device}][WARN] negotiated mode differs from requested "
+                  f"{self._width}x{self._height} {FISHEYE_FOURCC} — FOV may not "
+                  f"match the training/reference FOV (MJPG 640x480 is a cropped ROI).")
 
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
+    @staticmethod
+    def _decode_fourcc(fourcc_value):
+        """Decode a CAP_PROP_FOURCC float/int into its 4-character string."""
+        code = int(fourcc_value)
+        return "".join(chr((code >> (8 * i)) & 0xFF) for i in range(4))
+
     def _loop(self):
         while self._running:
             ret, frame = self._cap.read()
-            if ret:
-                with self._lock:
-                    self._color = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if not ret or frame is None:
+                continue
+            # VideoCapture.read() returns BGR regardless of the source YUYV, so
+            # convert to RGB. No resize: the camera already delivers 640x480.
+            with self._lock:
+                self._color = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def get(self):
         """Return color_rgb_uint8 or None."""

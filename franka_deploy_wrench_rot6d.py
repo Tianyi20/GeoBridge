@@ -7,9 +7,9 @@ and runs closed-loop control on the real Franka:
     - obs.agentview_image  <-  Intel RealSense L515 (serial = L515_SERIALS[0])
     - obs.robot0_eye_in_hand_image <- USB wrist fisheye (640x480 -> 224x224)
     - obs.robot0_eef_pos   <-  Franka tip xyz (base frame)
-    - obs.robot0_eef_quat  <-  Franka tip orientation (xyzw)
+    - obs.robot0_eef_rot6d <-  Franka tip orientation (rot6d, PyTorch3D)
     - obs.robot0_gripper_qpos <- binary state (1,): 1=open, 0=closed
-    - action               ->  8-dim [xyz, qx,qy,qz,qw, gripper_per_finger]
+    - action               ->  10-dim [xyz(3), rot6d(6), gripper(1)]
 
 Which image obs keys are filled is driven by ``--camera_setup`` together with
 the checkpoint's ``cfg.task.shape_meta.obs`` rgb keys (see ``plan_cameras``).
@@ -22,7 +22,7 @@ NUC (下位机):
 
 Workstation (上位机, this script):
     python franka_deploy_wrench.py \
-        -c GeoBridgeCheckpoints/6_22_wrench/latest.ckpt \
+        -c GeoBridgeCheckpoints/fisheye_6d_wrench/latest.ckpt \
         -o data/real_deploy \
         --camera_setup both
 
@@ -74,6 +74,12 @@ from franka_collect import (  # noqa: E402
 from diffusion_policy.common.pytorch_util import dict_apply  # noqa: E402
 from diffusion_policy.common.pose_trajectory_interpolator import (  # noqa: E402
     PoseTrajectoryInterpolator,
+)
+from diffusion_policy.model.common.rotation_transformer import (  # noqa: E402
+    RotationTransformer,
+)
+from diffusion_policy.common.BulletBridge_util import (  # noqa: E402
+    quat_xyzw_to_rot6d_np, rot6d_to_quat_xyzw_np,
 )
 # Re-import to register the workspace target class for hydra
 import diffusion_policy.workspace.PhyDomain_AgentImage_workspace  # noqa: F401,E402
@@ -165,9 +171,43 @@ def plan_cameras(camera_setup, model_rgb_keys):
     return plan, warnings, errors
 
 
+# ======================== Rotation representation (rot6d) ========================
+# The 6D checkpoint (PhyFisheyeImage_6d_Dataset / wrench_fisheye_engagement_6d)
+# encodes rotation as PyTorch3D rotation_6d = first two rows of the rotation
+# matrix, flattened. Use the SAME transformer convention the dataset used
+# (quaternion wxyz <-> rotation_6d); rot6d->matrix is Gram-Schmidt
+# orthonormalized inside pytorch3d, so it is robust to near-degenerate inputs.
+ROTATION_TRANSFORMER = RotationTransformer(from_rep='quaternion', to_rep='rotation_6d')
+
+
+def validate_rotation_shape_meta(cfg):
+    """Confirm the checkpoint uses the rot6d obs/action layout this script emits.
+
+    In: hydra cfg. Out: list[str] of fatal errors (empty = OK). Checks action
+    shape == [10] and obs has 'robot0_eef_rot6d' with shape [6].
+    """
+    errors = []
+    obs_meta = cfg.task.shape_meta['obs']
+    action_shape = list(cfg.task.shape_meta['action']['shape'])
+    if action_shape != [10]:
+        errors.append(
+            f"checkpoint action shape is {action_shape}, expected [10] "
+            f"(xyz3 + rot6d6 + gripper1); this is not a rot6d checkpoint.")
+    if 'robot0_eef_rot6d' not in obs_meta:
+        errors.append(
+            f"checkpoint obs has no 'robot0_eef_rot6d' key (found {list(obs_meta)}); "
+            f"this is not a rot6d checkpoint.")
+    else:
+        rot_shape = list(obs_meta['robot0_eef_rot6d']['shape'])
+        if rot_shape != [6]:
+            errors.append(
+                f"obs 'robot0_eef_rot6d' shape is {rot_shape}, expected [6].")
+    return errors
+
+
 # --- Binary gripper convention (matches PickUpSim) ---
 #   obs.robot0_gripper_qpos : shape (1,), 1.0 = open, 0.0 = closed
-#   action[7]               : shape (), 1.0 = open, 0.0 = closed
+#   action[9]               : shape (), 1.0 = open, 0.0 = closed
 # Sim derives the obs state by thresholding the *mean per-finger* width at
 # 0.8 * (open_width + closed_width) = 0.8 * 0.04 = 0.032 m. The real Franka
 # reports *total* width (0..0.08), so we halve it before thresholding.
@@ -183,28 +223,36 @@ def gripper_width_to_state(total_width):
 
 
 def tip_pose_to_obs(tip_pose_rotvec, gripper_width):
-    """Franka tip pose (xyz + rotvec) + gripper width -> sim-format obs."""
+    """Franka tip pose (xyz + rotvec) + gripper width -> sim-format 6D obs.
+
+    Rotation is rot6d, matching the 6D dataset/env_runner: robot rotvec ->
+    quat_xyzw -> rot6d (via BulletBridge_util, same xyzw->wxyz path as training).
+    In: (6,) xyz+rotvec, width float. Out: obs dict with 'robot0_eef_rot6d' (6,).
+    """
     gripper_state = gripper_width_to_state(gripper_width)
     pos = tip_pose_rotvec[:3].astype(np.float32)
     quat_xyzw = st.Rotation.from_rotvec(tip_pose_rotvec[3:]).as_quat().astype(np.float32)
+    rot6d = quat_xyzw_to_rot6d_np(quat_xyzw, ROTATION_TRANSFORMER).astype(np.float32)
     return {
         'robot0_eef_pos': pos,
-        'robot0_eef_quat': quat_xyzw,
+        'robot0_eef_rot6d': rot6d,
         # shape (1,) to match shape_meta robot0_gripper_qpos: [1]
         'robot0_gripper_qpos': np.array([gripper_state], dtype=np.float32),
     }
 
 
-def action_to_targets(action8):
-    """[xyz, qx,qy,qz,qw, gripper_state] -> ([xyz,rotvec], gripper_state).
+def action_to_targets(action10):
+    """[xyz(3), rot6d(6), gripper(1)] -> ([xyz,rotvec], gripper_state).
 
+    rot6d (PyTorch3D, first two matrix rows) -> matrix (Gram-Schmidt) -> quat
+    -> rotvec, so the pose stays xyz+rotvec for update_desired_ee_pose.
     gripper_state is binary-ish (model outputs ~1.0 open / ~0.0 closed).
     """
-    pos = action8[:3].astype(np.float64)
-    quat_xyzw = action8[3:7].astype(np.float64)
-    quat_xyzw = quat_xyzw / np.linalg.norm(quat_xyzw)
+    pos = action10[:3].astype(np.float64)
+    rot6d = action10[3:9].astype(np.float32)
+    quat_xyzw = rot6d_to_quat_xyzw_np(rot6d, ROTATION_TRANSFORMER).astype(np.float64)
     rotvec = st.Rotation.from_quat(quat_xyzw).as_rotvec()
-    return np.concatenate([pos, rotvec]), float(action8[7])
+    return np.concatenate([pos, rotvec]), float(action10[9])
 
 
 # ======================== Async Inference Worker ========================
@@ -515,10 +563,10 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
     tip_now = np.asarray(robot.get_tip_pose(), dtype=np.float64)
     obs0 = tip_pose_to_obs(tip_now, gripper_width)
 
-    pos_buf  = deque([obs0['robot0_eef_pos'].copy()  for _ in range(n_obs_steps)], maxlen=n_obs_steps)
-    quat_buf = deque([obs0['robot0_eef_quat'].copy() for _ in range(n_obs_steps)], maxlen=n_obs_steps)
-    grip_buf = deque([obs0['robot0_gripper_qpos'].copy() for _ in range(n_obs_steps)],
-                     maxlen=n_obs_steps)
+    pos_buf   = deque([obs0['robot0_eef_pos'].copy()  for _ in range(n_obs_steps)], maxlen=n_obs_steps)
+    rot6d_buf = deque([obs0['robot0_eef_rot6d'].copy() for _ in range(n_obs_steps)], maxlen=n_obs_steps)
+    grip_buf  = deque([obs0['robot0_gripper_qpos'].copy() for _ in range(n_obs_steps)],
+                      maxlen=n_obs_steps)
 
     saved_actions, saved_states = [], []
     # video: capture one full-res frame per obs sample, per active camera
@@ -609,7 +657,7 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
                 gripper_width = float(robot.get_gripper_state()['width'])
                 obs_now = tip_pose_to_obs(tip_now, gripper_width)
                 pos_buf.append(obs_now['robot0_eef_pos'])
-                quat_buf.append(obs_now['robot0_eef_quat'])
+                rot6d_buf.append(obs_now['robot0_eef_rot6d'])
                 grip_buf.append(obs_now['robot0_gripper_qpos'])
                 next_obs_t += action_dt
                 if next_obs_t < t_now - action_dt:
@@ -618,9 +666,9 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
             # ============== 3. Submit next inference request ==============
             if t_now >= next_inf_t:
                 np_obs = {
-                    'robot0_eef_pos':  np.stack(list(pos_buf),  axis=0).astype(np.float32),
-                    'robot0_eef_quat': np.stack(list(quat_buf), axis=0).astype(np.float32),
-                    'robot0_gripper_qpos': np.stack(list(grip_buf), axis=0).astype(np.float32),
+                    'robot0_eef_pos':      np.stack(list(pos_buf),   axis=0).astype(np.float32),
+                    'robot0_eef_rot6d':    np.stack(list(rot6d_buf), axis=0).astype(np.float32),
+                    'robot0_gripper_qpos': np.stack(list(grip_buf),  axis=0).astype(np.float32),
                 }
                 # only send image keys the model consumes,
                 # shaped (n_obs_steps, 3, 224, 224) float in [0, 1].
@@ -795,6 +843,16 @@ def main(checkpoint, output_dir, device, robot_ip, robot_port,
     payload = torch.load(open(checkpoint, 'rb'), pickle_module=dill,
                          map_location='cpu')
     cfg = payload['cfg']
+
+    # ---- Validate rot6d obs/action layout (fail fast before opening devices) ----
+    rot_errors = validate_rotation_shape_meta(cfg)
+    if rot_errors:
+        for e in rot_errors:
+            print(f'[Rotation][ERROR] {e}')
+        print('[Deploy] aborting: checkpoint does not use the rot6d layout '
+              'this script emits (xyz3 + rot6d6 + gripper1).')
+        return
+
     cls = hydra.utils.get_class(cfg._target_)
     workspace = cls(cfg, output_dir=str(output_dir))
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
