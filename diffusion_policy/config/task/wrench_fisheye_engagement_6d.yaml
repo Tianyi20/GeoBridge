@@ -6,26 +6,26 @@ shape_meta: &shape_meta
     agentview_image:
       shape: [3, 224, 224]
       type: rgb
-    # robot0_eye_in_hand_image:
-    #   shape: [3, 224, 224]
-    #   type: rgb
+    robot0_eye_in_hand_image:
+      shape: [3, 224, 224]
+      type: rgb
     robot0_eef_pos:
       shape: [3]
       # type default: low_dim
-    robot0_eef_quat:
-      shape: [4]
+    robot0_eef_rot6d:
+      shape: [6]
     robot0_gripper_qpos:
       shape: [1]
-  action: 
-    shape: [8] # pos, quaternion, gripper
+  action:
+    shape: [10] # pos(3), rotation_6d(6), gripper(1)
 
 task_name: &task_name Wrench_Engagement
 dataset_type: &dataset_type ph
-dataset_path: &dataset_path ./data/DP_data/wrench_agentonly/wrench.zarr
+dataset_path: &dataset_path ./data/DP_data/wrench_fisheye/wrench.zarr
 abs_action: &abs_action True
 
 env_runner:
-  _target_: diffusion_policy.env_runner.wrench_engagement_runner.WrenchEngagementEnvRunner
+  _target_: diffusion_policy.env_runner.wrench_fisheye_engagement_6d_runner.WrenchEngagementEnvRunner
   # dataset_path: *dataset_path
   # shape_meta: *shape_meta
   n_train: 10
@@ -48,7 +48,7 @@ env_runner:
 # evaluation at this config requires a 26 core 128GB instance.
 
 dataset:
-  _target_: diffusion_policy.dataset.PhyAgentImageDataset.PhyAgentImageDataset
+  _target_: diffusion_policy.dataset.PhyFisheyeImage_6d_Dataset.PhyFisheyeImageDataset
   zarr_path: *dataset_path
   # dataset_path: *dataset_path
   horizon: ${horizon}

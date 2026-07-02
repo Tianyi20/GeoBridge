@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: wrench_fisheye_engagement
+  - task: wrench_fisheye_engagement_6d
 
 name: train_Phy_Fisheye_image
 _target_: diffusion_policy.workspace.PhyDomain_AgentImage_workspace.PhyAgentImageWorkspace

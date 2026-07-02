@@ -9,6 +9,8 @@ from diffusion_policy.common.sampler import (
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
 from diffusion_policy.common.normalize_util import get_image_range_normalizer
+from diffusion_policy.model.common.rotation_transformer import RotationTransformer
+
 from diffusion_policy.common.BulletBridge_util import action_quat_xyzw_to_rot6d_np, quat_xyzw_to_rot6d_np
 
 class PhyFisheyeImageDataset(BaseImageDataset):
@@ -23,6 +25,11 @@ class PhyFisheyeImageDataset(BaseImageDataset):
             ):
         
         super().__init__()
+        self.rotation_transformer = RotationTransformer(
+            from_rep='quaternion',
+            to_rep='rotation_6d',
+        )
+
         # self.replay_buffer = ReplayBuffer.copy_from_path(
         #     zarr_path, keys=['action', 'agentview_image', 'robot0_eef_pos', 
         #                      'robot0_eef_quat', 'robot0_gripper_qpos'])
@@ -121,7 +128,7 @@ class PhyFisheyeImageDataset(BaseImageDataset):
                 'robot0_eef_rot6d': robot0_eef_rot6d, # T, 6
                 'robot0_gripper_qpos': sample['robot0_gripper_qpos'].astype(np.float32), # T, 1
             },
-            'action': action_rot6d 
+            'action': action_rot6d  # T, 10 = xyz(3) + rot6d(6) + gripper(1)
         }
         return data
     
