@@ -171,7 +171,7 @@ class WrenchSim(object):
         self.grasp_world_normal = np.array([0.0, 0.0, -1.0], dtype=float)
         self.grasp_world_tangent = np.array([1.0, 0.0, 0.0], dtype=float)
 
-        self.safe_approach = 0.10
+        self.safe_approach = 0.05
         self.safe_grasp_offset = 0.05
         self.arm_force = 200.0
         self.gripper_force = 100.0
@@ -225,7 +225,7 @@ class WrenchSim(object):
 
         # fasten_screw: keep current wrench TCP position fixed and rotate
         # the TCP frame about its own local +Z axis by this angle.
-        self.fasten_angle_rad = -math.radians(45.0)
+        self.fasten_angle_rad = -math.radians(52.0)
         self.state_idx = 0
         self.state = self.states[self.state_idx]
         self.state_t = 0.0
@@ -266,7 +266,7 @@ class WrenchSim(object):
         self.wrench_collision_asset = shrink_mesh(
             self.wrench_mesh_path,
             shrink_mode="by_margin",
-            margin_m=0.005,
+            margin_m=0.000,
             shrink_center="centroid",
         )
         wrench_collision_path = coacd_convex_decomposition(self.wrench_collision_asset)
@@ -458,7 +458,7 @@ class WrenchSim(object):
 
         # wrench mesh origin -> actual wrench TCP / socket center
         # 这个是 mesh 自己坐标系里的 socket TCP，不应该直接当 parent_to_tcp 用
-        self.wrench_to_tcp_pos = np.array([0.11417, 0.0, 0.0], dtype=float)
+        self.wrench_to_tcp_pos = np.array([0.06989, 0.0, 0.0], dtype=float)
         self.wrench_to_tcp_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
 
         if randomize_wrenchpose:
@@ -511,12 +511,11 @@ class WrenchSim(object):
         self.screw_obj_path = manipulated_obj_path
         self.clipper_obj_path = clipper_obj_path
         self.screw_collision_asset = manipulated_obj_collision_path
-
         self.convex_clipper_path = coacd_convex_decomposition(self.clipper_obj_path)
         self.screw_collision_path = shrink_mesh(
             self.screw_collision_asset,
             shrink_mode="by_margin",
-            margin_m=0.003,
+            margin_m=0.00,
             shrink_center="centroid",
         )
         self.convex_screw_obj_path = coacd_convex_decomposition(self.screw_collision_path)
@@ -664,7 +663,6 @@ class WrenchSim(object):
             spinning_friction= 0.0,
         )
 
-        # time.sleep(1.0)
         # Object-level color / material domain randomization.
         # This is applied after the target object has been loaded into PyBullet.
         # It reads the current visual rgbaColor as the original/base color, then
@@ -764,7 +762,7 @@ class WrenchSim(object):
             engage_pos,
             engage_orn,
             local_axis=np.array([1.0, 0.0, 0.0], dtype=float),
-            distance=-(self.safe_approach + 0.05),
+            distance=-(self.safe_approach + 0.08),
         )
 
         fasten_orn = self.rotate_quat_about_local_z(
