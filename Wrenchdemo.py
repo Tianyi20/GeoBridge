@@ -43,7 +43,7 @@ Sim.make_scene(
     randomize_wrenchpose = True,
     wrench_xyz_jitter = 0.01,
     wrench_y_euler_jitter= 0.00,
-    randomize_objpose  = False,
+    randomize_objpose  = True,
     obj_x_jit    = 0.10,
     obj_y_jit    = 0.1,
     obj_z_jit    = 0.05,
