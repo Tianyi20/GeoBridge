@@ -243,14 +243,14 @@ def collect_dataset_from_phydomain_parallel(
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/storage/DP_data/fisheye_wrench_engagement/20260624_224158/episodes"
-    out_path = "./data/DP_data/wrench_fisheye/wrench.zarr"
+    data_root = "/mnt/storage/DP_data/fisheye_wrench_engagement/20260629_145303/episodes"
+    out_path = "./data/DP_data/wrench_agentonly/wrench.zarr"
 
     buffer = collect_dataset_from_phydomain_parallel(
         data_root,
         out_path,
         only_success=True,
-        use_eye_in_hand=True,
+        use_eye_in_hand=False,
         # Start with 1 for lowest RAM. Increase to 2 or 4 only after checking RAM.
         num_workers=25,
         prefetch_factor=20,

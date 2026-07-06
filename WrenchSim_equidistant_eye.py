@@ -4,7 +4,16 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from VisualDR import LightingDR, ImgNoiseDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR
+from VisualDR import LightingDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR
+
+try:
+    # Prefer the standalone updated camera-specific ImgNoiseDR if available.
+    from ImgNoiseDR import ImgNoiseDR
+except ImportError:
+    # Backward-compatible fallback for projects that still keep ImgNoiseDR
+    # inside VisualDR.py. If you use this path, make sure VisualDR.ImgNoiseDR
+    # has the updated implementation with camera_name/rgb_gain/gamma/saturation.
+    from VisualDR import ImgNoiseDR
 from pybullet_utility import (
     load_models,
     coacd_convex_decomposition,
@@ -61,7 +70,23 @@ class WrenchSim(object):
         # Keep bullet_client inside every module so each multiprocessing worker can
         # create an independent PickUpSim / VisualDR stack.
         self.lightingDR = LightingDR(self.bullet_client, seed=seed)
-        self.ImgNoiseDR = ImgNoiseDR(self.bullet_client, seed=seed)
+
+        # Camera-specific image-level DR. Keep scene-level randomization shared
+        # across cameras, but model each camera's own ISP / white balance /
+        # exposure / gamma / sensor noise with independent RNG states.
+        self.agentviewImgDR = ImgNoiseDR(
+            self.bullet_client,
+            seed=seed,
+            camera_name="agentview",
+        )
+        self.eyeImgDR = ImgNoiseDR(
+            self.bullet_client,
+            seed=seed + 1000,
+            camera_name="eye_in_hand",
+        )
+        # Backward-compatible alias for any old external debug code.
+        self.ImgNoiseDR = self.agentviewImgDR
+
         self.objposeDR  = PoseDR(self.bullet_client, seed=seed)
         self.camposeDR  = PoseDR(self.bullet_client, seed=seed)
         self.outsceneDR = PoseDR(self.bullet_client, seed=seed)
@@ -543,9 +568,45 @@ class WrenchSim(object):
             objOrn = self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_base))
 
         if randomize_image_noise:
-            self.ImgNoiseDR.sample_image_noise_randomization()
+            # Base/agent-view camera: RealSense-like RGB camera response.
+            # Keep this moderate so the base camera remains a stable global view.
+            self.agentviewImgDR.sample_image_noise_randomization(
+                brightness_range=(-32.0, 32.0),
+                contrast_range=(0.70, 1.35),
+                gamma_range=(0.70, 1.45),
+                saturation_range=(0.45, 1.65),
+                rgb_gain_range=(0.70, 1.30),
+                hue_shift_deg_range=(-10.0, 10.0),
+                color_matrix_strength_range=(0.04, 0.18),
+                gray_mix_range=(0.0, 0.28),
+                vignette_strength_range=(0.0, 0.22),
+                gaussian_std_range=(0.0, 7.0),
+                salt_pepper_prob_range=(0.0, 0.004),
+                blur_prob_range=(0.0, 0.24),
+            )
+
+            # Fisheye/eye-in-hand camera: stronger camera-specific response.
+            # This does more than color temperature: hue shift + RGB mixing +
+            # gray mixing + vignette cover larger sensor/ISP/lens differences.
+            # The fisheye image is augmented only after cubemap composition, so
+            # it will not create seams between rendered faces.
+            self.eyeImgDR.sample_image_noise_randomization(
+                brightness_range=(-32.0, 32.0),
+                contrast_range=(0.70, 1.35),
+                gamma_range=(0.70, 1.45),
+                saturation_range=(0.45, 1.65),
+                rgb_gain_range=(0.70, 1.30),
+                hue_shift_deg_range=(-10.0, 10.0),
+                color_matrix_strength_range=(0.04, 0.18),
+                gray_mix_range=(0.0, 0.28),
+                vignette_strength_range=(0.0, 0.22),
+                gaussian_std_range=(0.0, 7.0),
+                salt_pepper_prob_range=(0.0, 0.004),
+                blur_prob_range=(0.0, 0.24),
+            )
         else:
-            self.ImgNoiseDR.reset()
+            self.agentviewImgDR.reset()
+            self.eyeImgDR.reset()
 
         # Background scene mesh pose and invisible collision-plane height.
         #
@@ -1485,10 +1546,6 @@ class WrenchSim(object):
         self.bullet_client.addUserDebugLine(o, o + length * Rwc[:, 1], [0, 1, 0], 2, life_time)
         self.bullet_client.addUserDebugLine(o, o + length * Rwc[:, 2], [0, 0, 1], 2, life_time)
 
-    def apply_image_noise(self, rgb):
-        return self.ImgNoiseDR.apply_image_noise(rgb)
-
-
     def render_camera_raw(self, width, height, view_matrix, proj_matrix):
         """Render a camera without image noise.
 
@@ -1552,7 +1609,7 @@ class WrenchSim(object):
         rgba[bg_mask, 3] = 255
 
         rgb = rgba[..., :3]
-        rgb = self.apply_image_noise(rgb)
+        rgb = self.agentviewImgDR.apply_image_noise(rgb)
         rgba[..., :3] = rgb
 
 
@@ -1669,8 +1726,9 @@ class WrenchSim(object):
             # self.eye_face_names to include "neg_z" and rebuild the remap.
             pass
 
-        # Apply image noise once after fisheye composition.
-        out = self.apply_image_noise(out)
+        # Apply eye-camera image DR once after fisheye composition.
+        # Do not apply it per cubemap face, otherwise color/noise seams can show up.
+        out = self.eyeImgDR.apply_image_noise(out)
 
         # Restore face size if debug path changed it.
         self.eye_face_size = old_face_size

@@ -147,7 +147,7 @@ if __name__ == "__main__":
         data_root,
         out_path,
         only_success=True,
-        use_eye_in_hand=True,
+        use_eye_in_hand=False,
         num_workers=25,
     )
 
