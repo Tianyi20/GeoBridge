@@ -4,16 +4,7 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from VisualDR import LightingDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR
-
-try:
-    # Prefer the standalone updated camera-specific ImgNoiseDR if available.
-    from ImgNoiseDR import ImgNoiseDR
-except ImportError:
-    # Backward-compatible fallback for projects that still keep ImgNoiseDR
-    # inside VisualDR.py. If you use this path, make sure VisualDR.ImgNoiseDR
-    # has the updated implementation with camera_name/rgb_gain/gamma/saturation.
-    from VisualDR import ImgNoiseDR
+from VisualDR import LightingDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR, ImgNoiseDR
 from pybullet_utility import (
     load_models,
     coacd_convex_decomposition,
