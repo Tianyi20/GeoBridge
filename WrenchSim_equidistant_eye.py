@@ -4,7 +4,7 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from VisualDR import LightingDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR, ImgNoiseDR
+from VisualDR import LightingDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR, ImgNoiseDR, IntrinsicDR
 from pybullet_utility import (
     load_models,
     coacd_convex_decomposition,
@@ -94,6 +94,7 @@ class WrenchSim(object):
         self.wrenchposeDR = PoseDR(self.bullet_client, seed=seed)
         self.fisheyeCamDR = PoseDR(self.bullet_client, seed=seed)
         self.initialEePoseDR = PoseDR(self.bullet_client, seed=seed + 2000)
+        self.camIntrinsicDR = IntrinsicDR(seed=seed + 3000)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -117,6 +118,7 @@ class WrenchSim(object):
             [  0.0,    692.2195, 273.4784],
             [  0.0,      0.0,       1.0   ],
         ], dtype=np.float32)
+        self.agentview_intrinsic = self.agentview_base_intrinsic.copy()
 
         # Eye-in-hand camera calibration: equidistant / Kannala-Brandt 4 (KB4).
         # The real camera is 640x480, but the policy consumes a 224x224 image.
@@ -130,11 +132,12 @@ class WrenchSim(object):
         self.eye_near = 0.005
         self.eye_far = 1.0
 
-        self.eye_K = np.array([
+        self.eye_base_K = np.array([
             [242.78325327,   0.0,        316.28355305],
             [  0.0,        243.37493553, 211.80725024],
             [  0.0,          0.0,          1.0],
         ], dtype=np.float64)
+        self.eye_K = self.eye_base_K.copy()
 
         self.eye_D = np.array(
             [-0.04749038, 0.01991722, -0.02552236, 0.0084535],
@@ -450,6 +453,11 @@ class WrenchSim(object):
                    randomize_fisheye_cam = True,
                    fisheye_eyz_jit = 0.005,
                    fisheye_eul_jit = 0.002,
+                   randomize_camera_intrinsic = True,
+                   agentview_focal_scale_range = (0.88, 1.15),
+                   agentview_principal_jit_px = 18.0,
+                   eye_focal_scale_range = (0.90, 1.12),
+                   eye_principal_jit_px = 8.0,
                    randomize_image_noise = True,
                    # manipulated object color / material randomization
                    randomize_object_color = True,
@@ -699,6 +707,33 @@ class WrenchSim(object):
             )
         else:
             self.T_eye_parent_cam = self.T_eye_base_parent_cam.copy()
+
+        # Camera intrinsic / FOV randomization. Focal-length scaling is true FOV DR:
+        # smaller fx/fy -> wider FOV, larger fx/fy -> narrower FOV.
+        if randomize_camera_intrinsic:
+            self.agentview_intrinsic = self.camIntrinsicDR.sample_intrinsic_randomization(
+                self.agentview_base_intrinsic,
+                focal_scale_range=agentview_focal_scale_range,
+                principal_jit_px=agentview_principal_jit_px,
+                width=self.agentview_width,
+                height=self.agentview_height,
+            )
+            self.eye_K = self.camIntrinsicDR.sample_intrinsic_randomization(
+                self.eye_base_K,
+                focal_scale_range=eye_focal_scale_range,
+                principal_jit_px=eye_principal_jit_px,
+                width=self.eye_raw_width,
+                height=self.eye_raw_height,
+            )
+        else:
+            self.agentview_intrinsic = self.agentview_base_intrinsic.copy()
+            self.eye_K = self.eye_base_K.copy()
+
+        self.eye_fisheye_remap = self.build_eye_fisheye_remap(
+            out_width=self.eye_obs_width,
+            out_height=self.eye_obs_height,
+            face_size=self.eye_face_size,
+        )
         
         # Load background / outlier scene as visual-only.
         self.env_mesh = load_models(
@@ -1649,10 +1684,10 @@ class WrenchSim(object):
         return cropped_rgb
 
     def get_agentview_image(self):
-        projectionMatrix = cvK2BulletP(self.agentview_base_intrinsic, 
-                                       self.agentview_width, self.agentview_height, 
+        projectionMatrix = cvK2BulletP(self.agentview_intrinsic,
+                                       self.agentview_width, self.agentview_height,
                                        self.agentview_near, self.agentview_far)
-        
+
         viewMatrix = cvPose2BulletView(self.extrinsic_cam)
 
         return self.render_camera(self.agentview_width, self.agentview_height, viewMatrix, projectionMatrix)
@@ -1678,7 +1713,7 @@ class WrenchSim(object):
         far = self.agentview_far
 
         extrinsic_cam = self.extrinsic_cam.copy()
-        intrinsic_960x540 = self.agentview_base_intrinsic.copy()
+        intrinsic_960x540 = self.agentview_intrinsic.copy()
 
         sx = W / W0
         sy = H / H0
