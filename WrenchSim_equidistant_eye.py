@@ -53,7 +53,12 @@ rp = jointPositions
 
 class WrenchSim(object):
     def __init__(self, bullet_client, offset, 
-                 control_dt = 1.0 / 120.0, seed = 42):
+                 control_dt = 1.0 / 120.0, seed = 42,
+                 randomize_initial_ee_pose = True,
+                 initial_ee_x_jit = 0.04,
+                 initial_ee_y_jit = 0.05,
+                 initial_ee_z_jit = 0.05,
+                 initial_ee_eul_jit = 0.12):
         self.bullet_client = bullet_client
         self.bullet_client.setPhysicsEngineParameter(solverResidualThreshold=0)
 
@@ -88,6 +93,7 @@ class WrenchSim(object):
         self.fpsaObjectDR = FPSAObjectDR(seed=seed)
         self.wrenchposeDR = PoseDR(self.bullet_client, seed=seed)
         self.fisheyeCamDR = PoseDR(self.bullet_client, seed=seed)
+        self.initialEePoseDR = PoseDR(self.bullet_client, seed=seed + 2000)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -194,6 +200,7 @@ class WrenchSim(object):
 
         flags = self.bullet_client.URDF_ENABLE_CACHED_GRAPHICS_SHAPES
         base_orn = self.bullet_client.getQuaternionFromEuler([0, 0, 0])
+        self.use_wrench_tcp = False
 
         ################## Load Panda robot #################
         self.panda = self.bullet_client.loadURDF(
@@ -224,8 +231,23 @@ class WrenchSim(object):
             if jointType == self.bullet_client.JOINT_REVOLUTE:
                 self.bullet_client.resetJointState(self.panda, j, jointPositions[index])
                 index += 1
-        # Home pose and joints
-        self.home_joint = np.array(rp[:7], dtype=float)
+        # Home pose and joints. Optionally randomize around the initial gripper EE pose
+        # before caching home, so the whole state machine starts from this sampled pose.
+        base_ee_pos, base_ee_orn = self.get_ee_pose()
+        if randomize_initial_ee_pose:
+            init_ee_pos, init_ee_orn = self.initialEePoseDR.sample_SE3_randomization(
+                pos=base_ee_pos,
+                orn=base_ee_orn,
+                x_jitter_range=initial_ee_x_jit,
+                y_jitter_range=initial_ee_y_jit,
+                z_jitter_range=initial_ee_z_jit,
+                x_euler_jitter_range=initial_ee_eul_jit,
+                y_euler_jitter_range=initial_ee_eul_jit,
+                z_euler_jitter_range=initial_ee_eul_jit,
+            )
+            self.solve_ik_and_apply(init_ee_pos, init_ee_orn, input_frame="parent_ee", reset=True)
+
+        self.home_joint = np.array(self.get_current_arm_joints(), dtype=float)
         self.home_ee_pos, self.home_ee_orn = self.get_ee_pose()
         self.home_ee_pos = np.array(self.home_ee_pos, dtype=float)
         self.home_ee_orn = np.array(self.home_ee_orn, dtype=float)
@@ -985,7 +1007,7 @@ class WrenchSim(object):
         else:
             self.set_gripper_width(command)
 
-    def solve_ik_and_apply(self, target_pos, target_orn, input_frame="wrench_tcp"):
+    def solve_ik_and_apply(self, target_pos, target_orn, input_frame="wrench_tcp", reset=False):
         """Solve IK and apply arm joint commands.
 
         Args:
@@ -1000,6 +1022,8 @@ class WrenchSim(object):
                   are interpreted as the desired parent/original EE link pose directly.
                   No parent_to_tcp inverse transform is applied. This is the interface
                   to use when policy actions are saved in the original EE frame.
+            reset: If True, immediately reset the arm joints to the IK solution before
+                applying motor targets. Useful for randomized episode initialization.
         """
         p = self.bullet_client
         current_q = self.get_current_arm_joints()
@@ -1060,6 +1084,8 @@ class WrenchSim(object):
         )
 
         for i in range(pandaNumDofs):
+            if reset:
+                p.resetJointState(self.panda, i, jointPoses[i])
             p.setJointMotorControl2(
                 self.panda,
                 i,
@@ -1067,6 +1093,8 @@ class WrenchSim(object):
                 targetPosition=jointPoses[i],
                 force=self.arm_force,
             )
+
+        return np.asarray(jointPoses[:pandaNumDofs], dtype=float)
   
     def setJoint(self, jointPoses):
         for i in range(pandaNumDofs):
@@ -1221,7 +1249,9 @@ class WrenchSim(object):
 
         return self.target_pos, self.target_orn
 
-    def collect_observation(self, direct = False, collect_wrench_ee = False, use_eye_in_hand = True):
+    def collect_observation(self, use_agent_cam = True, direct = False, 
+                            collect_wrench_ee = False, 
+                            use_eye_in_hand = True):
         """
         TODO: Collect observations for diffusion policy
         obs = {
@@ -1246,20 +1276,26 @@ class WrenchSim(object):
             self.gripper_width_to_state(np.mean(finger_widths))
         ], dtype=np.float32)
 
-        # direct get 224 by approximate intrinsic
-        # else get 960 540 then rescale 
-        if direct: 
-            agentview224 = self.direct_get_agent_view()
-        else:
-            _, _, agentview_rgba, _, _ = self.get_agentview_image()
-            agentview = agentview_rgba[..., :3]
-            agentview224 = resize_rgb(agentview, out_size=224)
+        # basic robot state
         obs = {
-            "agentview_image": agentview224.astype(np.uint8),              # (224,224,3)
+            # "agentview_image": agentview224.astype(np.uint8),              # (224,224,3)
             "robot0_eef_pos": np.asarray(eef_pos, dtype=np.float32),       # (3,)
             "robot0_eef_quat": np.asarray(eef_quat, dtype=np.float32),     # (4,)
             "robot0_gripper_qpos": gripper_state,                          # (1,), 1=open, 0=closed
         }
+
+        if use_agent_cam:
+            # direct get 224 by approximate intrinsic
+            # else get 960 540 then rescale 
+            if direct: 
+                agentview224 = self.direct_get_agent_view()
+            else:
+                _, _, agentview_rgba, _, _ = self.get_agentview_image()
+                agentview = agentview_rgba[..., :3]
+                agentview224 = resize_rgb(agentview, out_size=224)
+
+            obs["agentview_image"] = agentview224.astype(np.uint8) # (224,224,3)
+
 
         if use_eye_in_hand:
             eye_in_hand = self.get_eye_in_hand_image()
