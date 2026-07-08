@@ -15,6 +15,8 @@ class WrenchEnv(gym.Env):
     def __init__(self, sim_steps_per_action=1,
                  connection_mode = p.DIRECT,
                  seed=46,
+                 use_agent_cam = True,
+                 use_fisheye_cam = True,
                  if_FPSA = False,
                  randomize_image_noise  = True,
                  randomize_objcolor = True,
@@ -28,6 +30,8 @@ class WrenchEnv(gym.Env):
                  randomize_wrenchcolor = True,
         ):
         self._seed = seed
+        self.use_agent_cam = use_agent_cam
+        self.use_fisheye_cam = use_fisheye_cam
         self.if_FPSA = if_FPSA
         self.randomize_image_noise = randomize_image_noise
         self.randomize_objcolor = randomize_objcolor
@@ -57,12 +61,12 @@ class WrenchEnv(gym.Env):
 
         # same as collect_observation()
         self.observation_space = spaces.Dict({
-            "agentview_image": spaces.Box(
-                low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
-            ),
-            "robot0_eye_in_hand_image": spaces.Box(
-                low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
-            ),
+            # "agentview_image": spaces.Box(
+            #     low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
+            # ),
+            # "robot0_eye_in_hand_image": spaces.Box(
+            #     low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
+            # ),
             "robot0_eef_pos": spaces.Box(
                 low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32
             ),
@@ -73,6 +77,15 @@ class WrenchEnv(gym.Env):
                 low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32
             ),
         })
+
+        if self.use_agent_cam:
+            self.observation_space.spaces["agentview_image"] = spaces.Box(
+                low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
+            )
+        if self.use_fisheye_cam:
+            self.observation_space.spaces["robot0_eye_in_hand_image"] = spaces.Box(
+                low=0, high=255, shape=(224, 224, 3), dtype=np.uint8
+            )    
 
 
     def seed(self, seed):
@@ -94,15 +107,15 @@ class WrenchEnv(gym.Env):
 
         self.sim.make_scene(
             env_mesh_path= "./data/background/repaired_table/tabletop.obj",
-            manipulated_obj_path= "./data/objects/screw/screw.obj",
-            manipulated_obj_collision_path = "./data/objects/screw/screw_collision_asset.obj",
-            wrench_mesh_path = "data/objects/wrench/wrench_v2/wrench_attached_v2.obj",
-            clipper_obj_path   = "data/objects/clipper/clipper.obj",
+            manipulated_obj_path= "./data/objects/screw/screw_v3/screw_v3.obj",
+            manipulated_obj_collision_path = "./data/objects/screw/screw_v3/screw_collision_v3.obj",
+            wrench_mesh_path = "data/objects/wrench/wrench_v3/wrench_attached_v3.obj",
+            clipper_obj_path   = "data/objects/clipper/clipper_v3/clipper_v3.obj",
             initial_grasp_path = "data/objects/wrench/wrench_v2/wrench_engage.yaml",
             if_FPSA = False,
             fpsa_aug_root = "./data/objects/bracket/fpsa_aug_outputs",
             fpsa_include_base = True,
-            obj_pose_base = [0.75, -0.05, 0.25],
+            obj_pose_base = [0.75, -0.05, 0.24],
             obj_euler_base = [0.0, 0.0, 0.0],# screw is a hexagon, 0-60 covers all space
             randomize_lighting= True,
             # outlier scene         
@@ -116,9 +129,9 @@ class WrenchEnv(gym.Env):
             wrench_xyz_jitter = 0.01,
             wrench_y_euler_jitter= 0.00,
             randomize_objpose  = True,
-            obj_x_jit    = 0.12,
-            obj_y_jit    = 0.1,
-            obj_z_jit    = 0.05,
+            obj_x_jit    = 0.1,
+            obj_y_jit    = 0.12,
+            obj_z_jit    = 0.02,
             obj_z_eul_jit = 0.0,
             randomize_campose = True,
             cam_xyz_jit  = 0.01,
@@ -138,15 +151,18 @@ class WrenchEnv(gym.Env):
             distractor_num_range= (0, 5),
             distractor_target_size_range= (0.1, 0.5),
             distractor_workspace = ((-0.2, 1.3), (-0.72, 0.42)),
-            distractor_clearance = 0.07,
-            distractor_path_clearance = 0.07,
+            distractor_clearance = 0.08,
+            distractor_path_clearance = 0.08,
             # at least 10 pixel of the target object
             distractor_min_target_mask_pixels= 10,
         )
 
     def reset(self):
         self._build_sim()
-        obs = self.sim.collect_observation(direct= True, use_eye_in_hand= True)
+        obs = self.sim.collect_observation(use_agent_cam= self.use_agent_cam, 
+                                           direct= True, 
+                                           use_eye_in_hand= self.use_fisheye_cam,
+                                           collect_wrench_ee= False)
         self._last_obs = obs
         return obs
 
@@ -175,7 +191,10 @@ class WrenchEnv(gym.Env):
             self._pybullet_client.stepSimulation()
 
         # use native get obs and is success
-        obs = self.sim.collect_observation(direct= True, use_eye_in_hand= True)
+        obs = self.sim.collect_observation(use_agent_cam= self.use_agent_cam, 
+                                           direct= True, 
+                                           use_eye_in_hand= self.use_fisheye_cam,
+                                           collect_wrench_ee= False)
         self._last_obs = obs
         done = self.sim.is_success()
         # reward is done, sparse reward
@@ -189,19 +208,27 @@ class WrenchEnv(gym.Env):
 
         return obs, reward, done, info
 
-    def render(self, mode='rgb_array'):
+    def render(self, mode="rgb_array"):
         obs = self._last_obs
+        imgs = []
 
-        base_img = obs["agentview_image"]
-        eye_img = obs["robot0_eye_in_hand_image"]
+        if self.use_agent_cam:
+            imgs.append(obs["agentview_image"])
 
-        gap = 16  # 留白宽度
-        h = base_img.shape[0]
+        if self.use_fisheye_cam:
+            imgs.append(obs["robot0_eye_in_hand_image"])
 
-        # 白色留白条
+        if len(imgs) == 0:
+            return None
+
+        if len(imgs) == 1:
+            return imgs[0]
+
+        gap = 16
+        h = imgs[0].shape[0]
         spacer = np.full((h, gap, 3), 255, dtype=np.uint8)
 
-        return np.concatenate([base_img, spacer, eye_img], axis=1)
+        return np.concatenate([imgs[0], spacer, imgs[1]], axis=1)
 
     def close(self):
         if self._pybullet_client is not None:

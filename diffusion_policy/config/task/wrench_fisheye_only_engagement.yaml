@@ -1,11 +1,11 @@
-name: Wrench_Engagement
+name: Wrench_Engagement_fisheye_only
 
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
   obs:
-    agentview_image:
-      shape: [3, 224, 224]
-      type: rgb
+    # agentview_image:
+    #   shape: [3, 224, 224]
+    #   type: rgb
     robot0_eye_in_hand_image:
       shape: [3, 224, 224]
       type: rgb
@@ -28,7 +28,7 @@ env_runner:
   _target_: diffusion_policy.env_runner.wrench_fisheye_engagement_runner.WrenchEngagementEnvRunner
   # dataset_path: *dataset_path
   # shape_meta: *shape_meta
-  use_agent_cam: True
+  use_agent_cam: False #fisheye only
   use_fisheye_cam: True
   n_train: 10
   max_steps: 250
@@ -50,7 +50,7 @@ env_runner:
 # evaluation at this config requires a 26 core 128GB instance.
 
 dataset:
-  _target_: diffusion_policy.dataset.PhyFisheyeImageDataset.PhyFisheyeImageDataset
+  _target_: diffusion_policy.dataset.PhyFisheye_only_ImageDataset.PhyFisheyeImageDataset
   zarr_path: *dataset_path
   # dataset_path: *dataset_path
   horizon: ${horizon}

@@ -4,7 +4,10 @@ import gym
 import numpy as np
 import math
 import pybullet_data
-from VisualDR import LightingDR, DistractorDR, PoseDR, ObjectColorDR, FPSAObjectDR, ImgNoiseDR, IntrinsicDR
+from VisualDR import(
+    LightingDR, DistractorDR, PoseDR, ObjectColorDR, 
+    FPSAObjectDR, ImgNoiseDR, IntrinsicDR, TextureDR
+)
 from pybullet_utility import (
     load_models,
     coacd_convex_decomposition,
@@ -90,6 +93,7 @@ class WrenchSim(object):
         self.distractorDR = DistractorDR(self.bullet_client, seed=seed)
         self.objectColorDR = ObjectColorDR(self.bullet_client, seed=seed)
         self.wrenchColorDR = ObjectColorDR(self.bullet_client, seed=seed+1)
+        self.robotTextureDR = TextureDR(self.bullet_client, seed=seed + 4000)
         self.fpsaObjectDR = FPSAObjectDR(seed=seed)
         self.wrenchposeDR = PoseDR(self.bullet_client, seed=seed)
         self.fisheyeCamDR = PoseDR(self.bullet_client, seed=seed)
@@ -459,6 +463,13 @@ class WrenchSim(object):
                    eye_focal_scale_range = (0.90, 1.12),
                    eye_principal_jit_px = 8.0,
                    randomize_image_noise = True,
+                   # robot body procedural texture randomization
+                   randomize_robot_texture = True,
+                   robot_texture_patterns = ("checkers", "gradient", "noise", "plain"),
+                   robot_texture_size = 128,
+                   robot_texture_per_link = True,
+                   robot_texture_specular_range = (0.02, 0.25),
+                   robot_original_texture_prob = 0.10,
                    # manipulated object color / material randomization
                    randomize_object_color = True,
                    object_color_mode = "bounded",  # "bounded" or "recolor"
@@ -574,6 +585,21 @@ class WrenchSim(object):
             self.lightingDR.sample_lighting_randomization()
         else:
             self.lightingDR.reset_to_default()
+
+        # Robot-body appearance DR. This only touches self.panda, so the task
+        # object and the separately loaded wrench tool keep their own visuals.
+        if randomize_robot_texture:
+            self.robot_texture_cfg = self.robotTextureDR.sample_and_apply_robot_texture_randomization(
+                body_id=self.panda,
+                patterns=robot_texture_patterns,
+                texture_size=robot_texture_size,
+                per_link=robot_texture_per_link,
+                specular_range=robot_texture_specular_range,
+                alpha=None,
+                original_texture_prob=robot_original_texture_prob,
+            )
+        else:
+            self.robotTextureDR.reset(body_id=self.panda, restore_original=True)
         
         if randomize_objpose:
             objPose, objOrn = self.objposeDR.sample_SE3_randomization(
@@ -589,41 +615,34 @@ class WrenchSim(object):
             objOrn = self.bullet_client.getQuaternionFromEuler(np.array(obj_euler_base))
 
         if randomize_image_noise:
-            # Base/agent-view camera: RealSense-like RGB camera response.
-            # Keep this moderate so the base camera remains a stable global view.
             self.agentviewImgDR.sample_image_noise_randomization(
-                brightness_range=(-32.0, 32.0),
-                contrast_range=(0.70, 1.35),
-                gamma_range=(0.70, 1.45),
-                saturation_range=(0.45, 1.65),
-                rgb_gain_range=(0.70, 1.30),
-                hue_shift_deg_range=(-10.0, 10.0),
-                color_matrix_strength_range=(0.04, 0.18),
-                gray_mix_range=(0.0, 0.28),
-                vignette_strength_range=(0.0, 0.22),
-                gaussian_std_range=(0.0, 7.0),
-                salt_pepper_prob_range=(0.0, 0.004),
-                blur_prob_range=(0.0, 0.24),
+                brightness_range=(-16.0, 16.0),
+                contrast_range=(0.85, 1.18),
+                gamma_range=(0.85, 1.20),
+                saturation_range=(0.75, 1.30),
+                rgb_gain_range=(0.85, 1.15),
+                hue_shift_deg_range=(-5.0, 5.0),
+                color_matrix_strength_range=(0.0, 0.08),
+                gray_mix_range=(0.0, 0.12),
+                vignette_strength_range=(0.0, 0.10),
+                gaussian_std_range=(0.0, 3.0),
+                salt_pepper_prob_range=(0.0, 0.0015),
+                blur_prob_range=(0.0, 0.12),
             )
 
-            # Fisheye/eye-in-hand camera: stronger camera-specific response.
-            # This does more than color temperature: hue shift + RGB mixing +
-            # gray mixing + vignette cover larger sensor/ISP/lens differences.
-            # The fisheye image is augmented only after cubemap composition, so
-            # it will not create seams between rendered faces.
             self.eyeImgDR.sample_image_noise_randomization(
-                brightness_range=(-32.0, 32.0),
-                contrast_range=(0.70, 1.35),
-                gamma_range=(0.70, 1.45),
-                saturation_range=(0.45, 1.65),
-                rgb_gain_range=(0.70, 1.30),
-                hue_shift_deg_range=(-10.0, 10.0),
-                color_matrix_strength_range=(0.04, 0.18),
-                gray_mix_range=(0.0, 0.28),
-                vignette_strength_range=(0.0, 0.22),
-                gaussian_std_range=(0.0, 7.0),
-                salt_pepper_prob_range=(0.0, 0.004),
-                blur_prob_range=(0.0, 0.24),
+                brightness_range=(-20.0, 20.0),
+                contrast_range=(0.82, 1.22),
+                gamma_range=(0.82, 1.25),
+                saturation_range=(0.70, 1.35),
+                rgb_gain_range=(0.82, 1.18),
+                hue_shift_deg_range=(-6.0, 6.0),
+                color_matrix_strength_range=(0.0, 0.10),
+                gray_mix_range=(0.0, 0.16),
+                vignette_strength_range=(0.0, 0.16),
+                gaussian_std_range=(0.0, 3.5),
+                salt_pepper_prob_range=(0.0, 0.002),
+                blur_prob_range=(0.0, 0.16),
             )
         else:
             self.agentviewImgDR.reset()

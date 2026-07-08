@@ -24,6 +24,8 @@ class WrenchEngagementEnvRunner(BaseImageRunner):
                  max_steps=2000,
                  n_obs_steps=2,
                  n_action_steps=8,
+                 use_agent_cam = True,
+                 use_fisheye_cam = True,
                  # How many envs as env runners
                  train_start_seed=43,
                  test_start_seed=20043,
@@ -48,6 +50,8 @@ class WrenchEngagementEnvRunner(BaseImageRunner):
                         sim_steps_per_action=12,
                         connection_mode=p.DIRECT,
                         seed = 46,
+                        use_agent_cam= use_agent_cam,
+                        use_fisheye_cam= use_fisheye_cam,
                         if_FPSA = False,
                         randomize_objcolor = True,
                         randomize_image_noise=True,

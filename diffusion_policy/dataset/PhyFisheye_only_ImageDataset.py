@@ -73,7 +73,7 @@ class PhyFisheyeImageDataset(BaseImageDataset):
         }
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
-        normalizer['agentview_image'] = get_image_range_normalizer()
+        # normalizer['agentview_image'] = get_image_range_normalizer()
         normalizer['robot0_eye_in_hand_image'] = get_image_range_normalizer()
 
         return normalizer
@@ -85,9 +85,9 @@ class PhyFisheyeImageDataset(BaseImageDataset):
         # agent_pos = sample['state'][:,:2].astype(np.float32) # (agent_posx2, block_posex3)
         # image = np.moveaxis(sample['img'],-1,1)/255
         # agentview_image = np.moveaxis(sample['agentview_image'],-1,1)/255
-        agentview_image = np.moveaxis(
-            sample['agentview_image'], -1, 1
-        ).astype(np.float32) / 255.0
+        # agentview_image = np.moveaxis(
+        #     sample['agentview_image'], -1, 1
+        # ).astype(np.float32) / 255.0
 
         robot0_eye_in_hand_image = np.moveaxis(
             sample['robot0_eye_in_hand_image'], -1, 1
@@ -95,7 +95,7 @@ class PhyFisheyeImageDataset(BaseImageDataset):
         # robot0_eye_in_hand_image = np.moveaxis(sample['robot0_eye_in_hand_image'],-1,1)/255
         data = {
             'obs': {
-                'agentview_image': agentview_image,
+                # 'agentview_image': agentview_image,
                 'robot0_eye_in_hand_image' : robot0_eye_in_hand_image,
                 'robot0_eef_pos': sample['robot0_eef_pos'].astype(np.float32), # T, 3
                 'robot0_eef_quat': sample['robot0_eef_quat'].astype(np.float32), # T, 4
