@@ -5,8 +5,8 @@ import numpy as np
 import math
 import pybullet_data
 from VisualDR import(
-    LightingDR, DistractorDR, PoseDR, ObjectColorDR, 
-    FPSAObjectDR, ImgNoiseDR, IntrinsicDR, TextureDR
+    LightingDR, DistractorDR, PoseDR, ObjectColorDR,
+    FPSAObjectDR, FPSAToolDR, ImgNoiseDR, IntrinsicDR, TextureDR
 )
 from pybullet_utility import (
     load_models,
@@ -95,6 +95,7 @@ class WrenchSim(object):
         self.wrenchColorDR = ObjectColorDR(self.bullet_client, seed=seed+1)
         self.robotTextureDR = TextureDR(self.bullet_client, seed=seed + 4000)
         self.fpsaObjectDR = FPSAObjectDR(seed=seed)
+        self.fpsaToolDR = FPSAToolDR(seed=seed + 2, require_collision=True)
         self.wrenchposeDR = PoseDR(self.bullet_client, seed=seed)
         self.fisheyeCamDR = PoseDR(self.bullet_client, seed=seed)
         self.initialEePoseDR = PoseDR(self.bullet_client, seed=seed + 2000)
@@ -307,14 +308,12 @@ class WrenchSim(object):
         """Load wrench mesh as a separate PyBullet body and fix it to the robot EE link."""
         p = self.bullet_client
 
-        # 推荐 collision 用 COACD/VHACD 后的 convex mesh
-        self.wrench_collision_asset = shrink_mesh(
-            self.wrench_mesh_path,
-            shrink_mode="by_margin",
-            margin_m=0.000,
-            shrink_center="centroid",
-        )
-        wrench_collision_path = coacd_convex_decomposition(self.wrench_collision_asset)
+        # FPSAToolDR returns the COACD mesh that belongs to the sampled visual mesh.
+        # For a non-FPSA/base tool, keep the old on-demand COACD fallback.
+        wrench_collision_path = getattr(self, "wrench_collision_path", None)
+        if wrench_collision_path is None:
+            wrench_collision_path = coacd_convex_decomposition(self.wrench_mesh_path)
+            self.wrench_collision_path = wrench_collision_path
 
         visual_shape = p.createVisualShape(
             shapeType=p.GEOM_MESH,
@@ -430,9 +429,13 @@ class WrenchSim(object):
                    wrench_mesh_path = None,
                    clipper_obj_path     = None,
                    initial_grasp_path = None,
-                   if_FPSA = False,
-                   fpsa_aug_root = "~/GeoBridge/data/objects/bracket/fpsa_aug_outputs",
-                   fpsa_include_base = True,
+                   # FPSA randomized wrench/tool mesh
+                   if_FPSA_tool = False,
+                   fpsa_tool_aug_root = "~/GeoBridge/data/objects/wrench/wrench_aug_outputs",
+                   fpsa_tool_include_base = False,
+                   wrench_collision_path = None,
+                   base_wrench_to_tcp_pos = (0.06989, 0.0, 0.0),
+                   base_wrench_to_tcp_orn = (0.0, 0.0, 0.0, 1.0),
                    obj_pose_base = [0.5, 0.0, 0.0],
                    obj_euler_base = [0.0, 0.0, 0.0],
                    randomize_lighting = True,
@@ -490,11 +493,6 @@ class WrenchSim(object):
                    distractor_min_target_mask_pixels = 1,
                    ):
         
-        ## TODO: visual things to be randomized:
-        # task wrench engagement
-        # 1. wrench tool assembling
-
-
         # always enable high quality rendering pipeline and shadows
 
         """ ################ Load basic scene assets ################ """
@@ -503,20 +501,48 @@ class WrenchSim(object):
         self.wrench_body_id = None
         self.wrench_constraint_id = None
 
-        # wrench mesh
-        self.wrench_mesh_path = wrench_mesh_path
+        # ------------------------------------------------------------------
+        # Wrench/tool asset randomization.
+        # FPSAToolDR samples the visual mesh, its matching COACD collision mesh,
+        # and the mesh-frame -> TCP pose from *_wrench_to_tcp.yaml.
+        # ------------------------------------------------------------------
+        if if_FPSA_tool:
+            fpsa_meta = self.fpsaToolDR.sample(
+                base_mesh_path=wrench_mesh_path,
+                base_collision_mesh_path=wrench_collision_path,
+                fpsa_aug_root=fpsa_tool_aug_root,
+                include_base=fpsa_tool_include_base,
+                base_wrench_to_tcp_pos=base_wrench_to_tcp_pos,
+                base_wrench_to_tcp_orn=base_wrench_to_tcp_orn,
+            )
+
+            self.wrench_mesh_path, self.wrench_collision_path, sampled_wrench_to_tcp_pos, sampled_wrench_to_tcp_orn = fpsa_meta
+
+            self.wrench_to_tcp_pos = np.asarray(
+                sampled_wrench_to_tcp_pos, dtype=float
+            )
+            self.wrench_to_tcp_orn = np.asarray(
+                sampled_wrench_to_tcp_orn, dtype=float
+            )
+        else:
+            self.wrench_mesh_path = wrench_mesh_path
+            self.wrench_collision_path = wrench_collision_path
+            self.wrench_to_tcp_pos = np.asarray(
+                base_wrench_to_tcp_pos, dtype=float
+            )
+            self.wrench_to_tcp_orn = np.asarray(
+                base_wrench_to_tcp_orn, dtype=float
+            )
+
+        if self.wrench_mesh_path is None:
+            raise ValueError("wrench_mesh_path must be provided")
 
         # 工具固定在哪个 robot link 上
-        # 先用你当前的 EE link；如果发现不对，再换成 panda_hand 的 index，比如 8
         self.tool_parent_link = pandaEndEffectorIndex
 
+        # Parent/original EE -> wrench mesh. PoseDR can jitter this mounting pose.
         self.parent_to_wrench_pos = np.array([0.0, 0.0, 0.0], dtype=float)
         self.parent_to_wrench_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
-
-        # wrench mesh origin -> actual wrench TCP / socket center
-        # 这个是 mesh 自己坐标系里的 socket TCP，不应该直接当 parent_to_tcp 用
-        self.wrench_to_tcp_pos = np.array([0.06989, 0.0, 0.0], dtype=float)
-        self.wrench_to_tcp_orn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
 
         if randomize_wrenchpose:
             self.parent_to_wrench_pos, self.parent_to_wrench_orn = self.wrenchposeDR.sample_SE3_randomization(
@@ -553,17 +579,6 @@ class WrenchSim(object):
         obj_pose_base = np.array(obj_pose_base, dtype=float).copy()
         obj_euler_base = np.array(obj_euler_base, dtype=float).copy()
 
-        if if_FPSA:
-            manipulated_obj_path, initial_grasp_path = self.fpsaObjectDR.sample(
-                base_mesh_path=manipulated_obj_path,
-                base_grasp_path=initial_grasp_path,
-                fpsa_aug_root=fpsa_aug_root,
-                include_base=fpsa_include_base,
-            )
-            self.fpsa_object_sample = self.fpsaObjectDR.last_sample
-        else:
-            self.fpsa_object_sample = None
-
         self.env_mesh_path = env_mesh_path
         self.screw_obj_path = manipulated_obj_path
         self.clipper_obj_path = clipper_obj_path
@@ -598,6 +613,7 @@ class WrenchSim(object):
                 alpha=None,
                 original_texture_prob=robot_original_texture_prob,
             )
+            ic(self.robot_texture_cfg)
         else:
             self.robotTextureDR.reset(body_id=self.panda, restore_original=True)
         
@@ -989,7 +1005,7 @@ class WrenchSim(object):
         grasp_pose, raw_grasp_orn = self.bullet_client.multiplyTransforms(
             mesh_world_pos,
             mesh_world_orn,
-            self.initial_grasp_guess["t"],
+            self.initial_grasp_guess["t"], # initial guess is based on Wrench tool's TCP
             self.initial_grasp_guess["quat"],
         )
 

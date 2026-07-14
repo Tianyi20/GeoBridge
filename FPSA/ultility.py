@@ -6,6 +6,8 @@ from scipy.spatial.transform import Rotation
 import numpy as np
 import coacd
 import trimesh
+from typing import Union
+
 
 def load_initial_grasp_pose(path: str):
     """
@@ -101,3 +103,66 @@ def coacd_convex_decomposition(obj_filename,threshold = 0.03, preprocess_resolut
     scene.export(output_file)
 
     return output_file
+
+
+
+
+def save_transform_yaml(
+    yaml_path: Union[str, Path],
+    transform: np.ndarray,
+    key: str = "wrench_to_tcp_T",
+) -> None:
+    """
+    保存 4x4 齐次变换矩阵到 YAML 文件。
+    """
+    transform = np.asarray(transform, dtype=float)
+
+    if transform.shape != (4, 4):
+        raise ValueError(
+            f"transform 必须是 4x4 矩阵，当前形状为 {transform.shape}"
+        )
+
+    yaml_path = Path(yaml_path)
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = {
+        key: transform.tolist(),
+    }
+
+    with yaml_path.open("w", encoding="utf-8") as file:
+        yaml.safe_dump(
+            data,
+            file,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+
+    print(f"Transform saved to: {yaml_path.resolve()}")
+
+
+def load_transform_yaml(
+    yaml_path: Union[str, Path],
+    key: str = "wrench_to_tcp_T",
+) -> np.ndarray:
+    """
+    从 YAML 文件读取 4x4 齐次变换矩阵。
+    """
+    yaml_path = Path(yaml_path)
+
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"找不到 YAML 文件: {yaml_path}")
+
+    with yaml_path.open("r", encoding="utf-8") as file:
+        data = yaml.safe_load(file)
+
+    if not isinstance(data, dict) or key not in data:
+        raise KeyError(f"YAML 文件中不存在字段: {key}")
+
+    transform = np.asarray(data[key], dtype=float)
+
+    if transform.shape != (4, 4):
+        raise ValueError(
+            f"读取到的 transform 必须是 4x4 矩阵，当前形状为 {transform.shape}"
+        )
+
+    return transform

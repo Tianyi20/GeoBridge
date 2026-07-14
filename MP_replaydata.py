@@ -243,7 +243,7 @@ def collect_dataset_from_phydomain_parallel(
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/storage/DP_data/fisheye_wrench_engagement/20260707_152746/episodes"
+    data_root = "/mnt/storage/DP_data/fisheye_wrench_engagement/20260708_155921/episodes"
     out_path = "./data/DP_data/fisheye_wrench_v2/wrench.zarr"
 
     buffer = collect_dataset_from_phydomain_parallel(

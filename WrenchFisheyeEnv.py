@@ -101,6 +101,7 @@ class WrenchEnv(gym.Env):
             control_dt = 1. / 120.,
             offset=[0, 0, 0],
             seed=self._seed,
+            randomize_initial_ee_pose= True
         )
 
         self.sim.enable_high_quality_rendering()
@@ -129,9 +130,9 @@ class WrenchEnv(gym.Env):
             wrench_xyz_jitter = 0.01,
             wrench_y_euler_jitter= 0.00,
             randomize_objpose  = True,
-            obj_x_jit    = 0.1,
-            obj_y_jit    = 0.12,
-            obj_z_jit    = 0.02,
+            obj_x_jit    = 0.05,
+            obj_y_jit    = 0.1,
+            obj_z_jit    = 0.05,
             obj_z_eul_jit = 0.0,
             randomize_campose = True,
             cam_xyz_jit  = 0.01,
@@ -139,8 +140,11 @@ class WrenchEnv(gym.Env):
             randomize_fisheye_cam = True,
             fisheye_eyz_jit = 0.005,
             fisheye_eul_jit = 0.002,
+            randomize_camera_intrinsic = True,
             randomize_image_noise= True,
             randomize_object_color = True,
+            randomize_robot_texture = True,
+            robot_texture_patterns= ("checkers", "gradient", "noise", "plain"),
             object_color_mode = "bounded",  # "bounded" or "recolor"
             object_color_strength = 0.5,
             randomize_wrench_color = True,

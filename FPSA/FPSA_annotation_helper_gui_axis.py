@@ -12,9 +12,9 @@ This version is intentionally simple and stable:
 
 Typical usage:
     python FPSA_annotation_helper_gui_axis.py \
-        --mesh /home/iadc/GeoBridge/data/objects/wrench/wrench_v2/wrench.obj \
+        --mesh /home/iadc/GeoBridge/data/objects/wrench/high_quality/wrench.obj \
         --label wrench_x_stretch \
-        --out wrench_x_stretch.yaml
+        --out wrench_quality_stretch.yaml
 
 Controls:
     C             : constrained/fixed vertex picking mode

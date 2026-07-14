@@ -1,7 +1,7 @@
 import open3d as o3d
 
-in_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_v2/wrench_attached_v2.obj"
-out_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_v2/wrench.obj"
+in_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_v3/wrench_attached_v3.obj"
+out_path = "/home/iadc/GeoBridge/data/objects/wrench/wrench_v3/wrench.obj"
 
 mesh = o3d.io.read_triangle_mesh(in_path)
 

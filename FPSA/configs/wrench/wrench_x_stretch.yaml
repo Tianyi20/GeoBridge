@@ -1,0 +1,53 @@
+# FPSA manual annotation.
+# Edit `range` manually before running FPSA_batch_randomizer.py.
+# `constrained_ids` includes `reshaped_ids`.
+# `reshaped_vector` and `range` are per-handle and match the order of `reshaped_ids`.
+deformations:
+  - label: wrench_x_stretch
+    type: displacement
+    description: Manually annotated FPSA deformation label
+    constrained_ids: [155, 153, 149, 173, 197, 189, 179, 177, 176, 178, 172, 148,
+      0, 61, 60, 50, 22, 174, 175, 171, 157, 150, 13, 6, 14, 15, 16, 25, 20, 11, 4,
+      5, 7, 9, 18, 23, 32, 44, 183, 147, 182, 167, 160, 82, 62, 29, 31, 17, 8, 2,
+      10, 27, 48, 39, 21, 194, 204, 188, 69, 67, 151, 152, 81, 12, 68, 70, 64, 63,
+      66, 65, 102, 113, 75, 112]
+    reshaped_ids: [69, 67, 151, 152, 81, 12, 68, 70, 64, 63, 66, 65, 102, 113, 75,
+      112]
+    reshaped_vector:
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+    range:
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+      - [0.0, 0.0]
+    coupled: false
+    normalize_vector: true
+    distribution: uniform
+    weight: 1.0

@@ -6,3 +6,4 @@ from .ObjectColorDR import ObjectColorDR
 from .FPSAObjectDR import FPSAObjectDR
 from .intrinsicDR import IntrinsicDR
 from .textureDR import TextureDR
+from .FPSAToolDR import FPSAToolDR
