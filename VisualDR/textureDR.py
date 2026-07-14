@@ -324,8 +324,11 @@ class TextureDR:
         Pass only the robot body id here. Task objects and rigid tools are not
         touched unless the caller explicitly passes those body ids.
 
-        original_texture_prob gives an episode-level chance of actively
-        restoring and returning the robot's original, non-randomized texture.
+        original_texture_prob gives an episode-level chance of keeping the
+        body's currently loaded visual appearance unchanged. The sampled
+        ``original`` branch is a no-op: it does not call changeVisualShape(),
+        because forcing cached rgba / texture ids back onto the body can erase
+        the URDF material colors and make some links appear white.
         Set it to 0.0 to always apply procedural texture DR.
         """
         body_id = int(body_id)
@@ -336,14 +339,21 @@ class TextureDR:
 
         original_texture_prob = float(np.clip(original_texture_prob, 0.0, 1.0))
         if self.rng.random() < original_texture_prob:
-            cfg = self.restore_original_texture(body_id, link_indices=links)
-            cfg.update({
+            # Keep the visual state exactly as PyBullet currently has it.
+            # Do not call restore_original_texture()/changeVisualShape() here:
+            # re-applying cached rgba or texture ids can discard URDF material
+            # colors and turn links white.
+            cfg = {
+                "body_id": body_id,
+                "mode": "original",
+                "applied": False,
                 "patterns": list(patterns),
                 "texture_size": int(texture_size),
                 "per_link": bool(per_link),
                 "original_texture_prob": original_texture_prob,
-                "reason": "sampled_original_robot_texture",
-            })
+                "reason": "sampled_original_robot_texture_noop",
+                "link_cfgs": [],
+            }
             self.last_cfg = cfg
             return cfg
 
