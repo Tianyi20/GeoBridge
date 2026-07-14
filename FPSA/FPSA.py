@@ -322,8 +322,8 @@ class ShapeAugmentor:
         mesh.compute_triangle_normals()
         mesh.compute_vertex_normals()
 
-        ic(constraint_ids, target_positions)
-        ic(V_in[constraint_ids])
+        # ic(constraint_ids, target_positions)
+        # ic(V_in[constraint_ids])
 
         constraint_ids_o3d = o3d.utility.IntVector([int(i) for i in constraint_ids])
         target_positions_o3d = o3d.utility.Vector3dVector(
@@ -334,7 +334,8 @@ class ShapeAugmentor:
                 o3d.utility.VerbosityLevel.Debug) as cm:
             mesh_prime = mesh.deform_as_rigid_as_possible(constraint_ids_o3d,
                                                         target_positions_o3d,
-                                                        max_iter=max_iters)
+                                                        max_iter=max_iters,
+                                                        energy = o3d.geometry.DeformAsRigidAsPossibleEnergy.Smoothed,)# Smoothed
 
         V_new = np.asarray(mesh_prime.vertices, dtype=np.float64)
         if V_new.shape != V_in.shape:
@@ -1408,3 +1409,19 @@ class ShapeAugmentor:
             height=900,
         )
         return None
+    
+    def apply_transformation_to_mesh(self, T):
+        """
+        Apply a 4x4 SE(3) transformation to the original mesh vertices.
+
+        Args:
+            T: 4x4 SE(3) transformation matrix.
+        """
+        T = np.asarray(T, dtype=np.float64)
+        if T.shape != (4, 4):
+            raise ValueError(f"T must be 4x4, got {T.shape}")
+
+        R = T[:3, :3]
+        t = T[:3, 3]
+
+        self.V_opt = (self.V_opt @ R.T) + t[None, :]
