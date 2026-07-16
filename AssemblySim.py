@@ -202,7 +202,7 @@ class AssemblySim(object):
         self.safe_approach = 0.05
         self.safe_grasp_offset = 0.05
         self.arm_force = 200.0
-        self.gripper_force = 100.0
+        self.gripper_force = 200.0
 
         flags = self.bullet_client.URDF_ENABLE_CACHED_GRAPHICS_SHAPES
         base_orn = self.bullet_client.getQuaternionFromEuler([0, 0, 0])
@@ -289,8 +289,10 @@ class AssemblySim(object):
         # Grasp and assembly references.
         self.last_grasp_pose = None
         self.last_grasp_orn = None
-        self.parent_to_ee_grasp_pos = None
-        self.parent_to_ee_grasp_orn = None
+        self.parent_motion_start_pos = None
+        self.parent_motion_start_orn = None
+        self.parent_motion_target_pos = None
+        self.parent_motion_target_orn = None
         self.initial_parent_pos = None
         self.initial_parent_orn = None
         self.initial_child_pos = None
@@ -316,57 +318,44 @@ class AssemblySim(object):
             )
         )
 
-    def get_parent_to_ee_grasp_transform(self, use_cached=True):
-        """Return parent-object-frame -> Panda EE transform for the active grasp."""
-        if (
-            use_cached
-            and self.parent_to_ee_grasp_pos is not None
-            and self.parent_to_ee_grasp_orn is not None
-        ):
-            return (
-                self.parent_to_ee_grasp_pos.copy(),
-                self.parent_to_ee_grasp_orn.copy(),
-            )
+    def get_parent_to_ee_transform(self, ee_pos=None, ee_orn=None):
+        """Return the current parent-object-frame -> EE transform.
 
+        With no explicit EE pose, this reads both bodies from PyBullet every
+        time, so grasp slip is reflected immediately. An explicit EE pose is
+        only used when building annotation-based debug/distractor waypoints.
+        """
         parent_pos, parent_orn = self.get_parent_obj_pose()
-        grasp_pos, grasp_orn = self.get_initial_guess_grasp()
+        if ee_pos is None or ee_orn is None:
+            ee_pos, ee_orn = self.get_ee_pose()
+
         inv_parent_pos, inv_parent_orn = self.bullet_client.invertTransform(
             parent_pos.tolist(), parent_orn.tolist()
         )
         rel_pos, rel_orn = self.bullet_client.multiplyTransforms(
             inv_parent_pos,
             inv_parent_orn,
-            grasp_pos.tolist(),
-            grasp_orn.tolist(),
+            np.asarray(ee_pos, dtype=float).tolist(),
+            np.asarray(ee_orn, dtype=float).tolist(),
         )
         return np.asarray(rel_pos, dtype=float), np.asarray(rel_orn, dtype=float)
 
-    def cache_parent_to_ee_grasp_transform(self):
-        """Cache the actual post-close parent -> EE transform to absorb grasp slip."""
-        parent_pos, parent_orn = self.get_parent_obj_pose()
-        ee_pos, ee_orn = self.get_ee_pose()
-        inv_parent_pos, inv_parent_orn = self.bullet_client.invertTransform(
-            parent_pos.tolist(), parent_orn.tolist()
-        )
-        rel_pos, rel_orn = self.bullet_client.multiplyTransforms(
-            inv_parent_pos,
-            inv_parent_orn,
-            ee_pos.tolist(),
-            ee_orn.tolist(),
-        )
-        self.parent_to_ee_grasp_pos = np.asarray(rel_pos, dtype=float)
-        self.parent_to_ee_grasp_orn = np.asarray(rel_orn, dtype=float)
+    def get_ee_pose_for_parent_pose(
+        self, parent_pos, parent_orn, parent_to_ee=None
+    ):
+        """Convert a desired parent pose into an EE pose.
 
-    def get_ee_pose_for_parent_pose(self, parent_pos, parent_orn, use_cached=True):
-        """Convert a desired parent-object pose into the EE pose that carries it."""
-        rel_pos, rel_orn = self.get_parent_to_ee_grasp_transform(
-            use_cached=use_cached
-        )
+        Runtime calls leave ``parent_to_ee`` unset, forcing a fresh transform
+        measurement from the current simulated parent and EE poses.
+        """
+        if parent_to_ee is None:
+            parent_to_ee = self.get_parent_to_ee_transform()
+        rel_pos, rel_orn = parent_to_ee
         ee_pos, ee_orn = self.bullet_client.multiplyTransforms(
             np.asarray(parent_pos, dtype=float).tolist(),
             np.asarray(parent_orn, dtype=float).tolist(),
-            rel_pos.tolist(),
-            rel_orn.tolist(),
+            np.asarray(rel_pos, dtype=float).tolist(),
+            np.asarray(rel_orn, dtype=float).tolist(),
         )
         return np.asarray(ee_pos, dtype=float), np.asarray(ee_orn, dtype=float)
 
@@ -388,7 +377,7 @@ class AssemblySim(object):
     def get_preassembly_parent_pose(self):
         """Return a pose above the final target along the child local assembly axis."""
         target_pos, target_orn = self.get_assembly_target_parent_pose()
-        child_pos, child_orn = self.get_child_obj_pose()
+        _, child_orn = self.get_child_obj_pose()
         child_rot = R.from_quat(child_orn)
         axis_world = child_rot.apply(self.assembly_axis_local)
         axis_world = axis_world / np.linalg.norm(axis_world)
@@ -465,9 +454,9 @@ class AssemblySim(object):
                    distractor_clearance=0.04,
                    distractor_path_clearance=0.04,
                    distractor_min_target_mask_pixels=1,
-                   parent_mass=0.15,
+                   parent_mass=0.5,
                    child_mass=0.2,
-                   parent_lateral_friction=1.0,
+                   parent_lateral_friction=0.6,
                    child_lateral_friction=0.8,
                    child_rgba=(0.90, 0.03, 0.03, 1.0),
                    assembly_axis_local=(0.0, 0.0, 1.0),
@@ -736,7 +725,7 @@ class AssemblySim(object):
             baseOrientation=parent_orn,
             center_of_mass=np.asarray(self.com_parent),
             lateral_friction=float(parent_lateral_friction),
-            spinning_friction=0.002,
+            spinning_friction=0.0002,
         )
         self.parent_obj_id = self.assembly_parent_id
         self.pick_up_obj_id = self.assembly_parent_id
@@ -803,8 +792,6 @@ class AssemblySim(object):
 
         self.initial_parent_pos, self.initial_parent_orn = self.get_parent_obj_pose()
         self.initial_child_pos, self.initial_child_orn = self.get_child_obj_pose()
-        self.parent_to_ee_grasp_pos = None
-        self.parent_to_ee_grasp_orn = None
         self.target_gripper = self.GRIPPER_OPEN
         self.set_gripper_state(self.target_gripper)
 
@@ -820,11 +807,14 @@ class AssemblySim(object):
 
         pre_parent_pos, pre_parent_orn = self.get_preassembly_parent_pose()
         target_parent_pos, target_parent_orn = self.get_assembly_target_parent_pose()
+        annotated_parent_to_ee = self.get_parent_to_ee_transform(
+            ee_pos=grasp_pos, ee_orn=grasp_orn
+        )
         pre_ee_pos, pre_ee_orn = self.get_ee_pose_for_parent_pose(
-            pre_parent_pos, pre_parent_orn, use_cached=False
+            pre_parent_pos, pre_parent_orn, annotated_parent_to_ee
         )
         target_ee_pos, target_ee_orn = self.get_ee_pose_for_parent_pose(
-            target_parent_pos, target_parent_orn, use_cached=False
+            target_parent_pos, target_parent_orn, annotated_parent_to_ee
         )
 
         return [
@@ -1036,6 +1026,10 @@ class AssemblySim(object):
         self.motion_start_orn = ee_orn.copy()
         self.motion_target_pos = ee_pos.copy()
         self.motion_target_orn = ee_orn.copy()
+        self.parent_motion_start_pos = None
+        self.parent_motion_start_orn = None
+        self.parent_motion_target_pos = None
+        self.parent_motion_target_orn = None
 
         if self.target_gripper is None:
             self.target_gripper = self.GRIPPER_OPEN
@@ -1067,28 +1061,23 @@ class AssemblySim(object):
             self.target_gripper = self.GRIPPER_CLOSED
 
         elif state == "lift_parent":
-            if self.parent_to_ee_grasp_pos is None:
-                self.cache_parent_to_ee_grasp_transform()
             self.motion_target_pos = ee_pos + np.array(
                 [0.0, 0.0, self.safe_grasp_offset + 0.12], dtype=float
             )
             self.motion_target_orn = ee_orn.copy()
 
-        elif state == "move_preassembly":
-            pre_parent_pos, pre_parent_orn = self.get_preassembly_parent_pose()
-            target_pos, target_orn = self.get_ee_pose_for_parent_pose(
-                pre_parent_pos, pre_parent_orn, use_cached=True
+        elif state in ("move_preassembly", "assemble"):
+            self.parent_motion_start_pos, self.parent_motion_start_orn = (
+                self.get_parent_obj_pose()
             )
-            self.motion_target_pos = target_pos
-            self.motion_target_orn = target_orn
-
-        elif state == "assemble":
-            parent_pos, parent_orn = self.get_assembly_target_parent_pose()
-            target_pos, target_orn = self.get_ee_pose_for_parent_pose(
-                parent_pos, parent_orn, use_cached=True
-            )
-            self.motion_target_pos = target_pos
-            self.motion_target_orn = target_orn
+            if state == "move_preassembly":
+                target_parent_pose = self.get_preassembly_parent_pose()
+            else:
+                target_parent_pose = self.get_assembly_target_parent_pose()
+            (
+                self.parent_motion_target_pos,
+                self.parent_motion_target_orn,
+            ) = target_parent_pose
 
         elif state == "hold_assembled":
             self.motion_target_pos = ee_pos.copy()
@@ -1096,10 +1085,6 @@ class AssemblySim(object):
             self.target_gripper = self.GRIPPER_CLOSED
 
     def switch_to_next_state(self):
-        # Cache the real grasp after the fingers have had time to close.
-        if self.state == "close_gripper":
-            self.cache_parent_to_ee_grasp_transform()
-
         self.state_idx += 1
         if self.state_idx >= len(self.states):
             self.done = True
@@ -1122,6 +1107,23 @@ class AssemblySim(object):
         if self.state in ["open_gripper", "close_gripper"]:
             self.set_gripper_state(self.target_gripper)
             self.target_pos, self.target_orn = self.get_ee_pose()
+        elif self.state in ("move_preassembly", "assemble"):
+            desired_parent_pos = (
+                (1.0 - s) * self.parent_motion_start_pos
+                + s * self.parent_motion_target_pos
+            )
+            desired_parent_orn = quat_slerp(
+                self.parent_motion_start_orn,
+                self.parent_motion_target_orn,
+                s,
+            )
+            # Measure parent -> EE again on every simulation step. If the ring
+            # slips in the fingers, the commanded EE pose changes immediately.
+            self.target_pos, self.target_orn = self.get_ee_pose_for_parent_pose(
+                desired_parent_pos, desired_parent_orn
+            )
+            self.solve_ik_and_apply(self.target_pos, self.target_orn)
+            self.set_gripper_state(self.target_gripper)
         else:
             self.target_pos = (
                 (1.0 - s) * self.motion_start_pos + s * self.motion_target_pos
