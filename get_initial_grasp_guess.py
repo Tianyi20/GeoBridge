@@ -15,7 +15,7 @@ manual_panda_grasp_editor.py
 
 运行：
     python get_initial_grasp_guess.py /path/to/object_mesh.stl
-    python get_initial_grasp_guess.py /path/to/object_mesh.obj --out mug_grasp.yaml
+    python get_initial_grasp_guess.py data/objects/assembly/tool/tool.obj --out tool_grasp.yaml
 
     python get_initial_grasp_guess.py /home/iadc/GeoBridge/data/objects/banana/banana.obj --out /home/iadc/GeoBridge/data/objects/banana/grasp.yaml
 快捷键（建议先看终端，会持续打印当前 pose）：

@@ -43,3 +43,13 @@ Note always `--restart-every` after 5 collections to prevent the process ran out
 ```shell
 python MP_collectdata.py --num-episodes 3000 --num-processes 24 --restart-every 2
 ```
+
+```shell
+python step_to_high_quality_obj.py \
+        --input assembly_child.STEP \
+        --output assembly_child.obj \
+        --target-divisions 20 \
+        --curvature 8 \
+        --scale-output 0.001
+
+```

@@ -613,7 +613,7 @@ class WrenchSim(object):
                 alpha=None,
                 original_texture_prob=robot_original_texture_prob,
             )
-            ic(self.robot_texture_cfg)
+            # ic(self.robot_texture_cfg)
         else:
             self.robotTextureDR.reset(body_id=self.panda, restore_original=True)
         
