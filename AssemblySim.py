@@ -320,6 +320,14 @@ class AssemblySim(object):
         self.object_in_hand_eul_jit = np.array([0.0174533, 0.0174533, 0.0349066], dtype=float)
         self.object_in_hand_debug = False
 
+        # A fixed joint does not disable contact generation.  Once the parent
+        # is rigidly attached, disable collision only against the local gripper
+        # links so contact constraints do not fight the JOINT_FIXED constraint.
+        # Collisions against the child, plane, environment and distractors stay on.
+        self.disable_parent_gripper_collision = True
+        self.parent_gripper_collision_links = (8, 9, 10, pandaEndEffectorIndex)
+        self.parent_gripper_collision_disabled = False
+
         self.prepare_state(self.state)
 
  
@@ -362,8 +370,50 @@ class AssemblySim(object):
         )
         return np.asarray(rel_pos, dtype=float), np.asarray(rel_orn, dtype=float)
 
+    def set_parent_gripper_collision_enabled(self, enabled):
+        """Enable/disable only parent-vs-local-gripper collision pairs.
+
+        ``JOINT_FIXED`` constrains relative motion but does not suppress contact
+        generation.  This helper therefore filters collision only between the
+        parent object's base link and the configured Panda hand/finger/EE links.
+        Parent collisions with the child, plane, environment and distractors are
+        intentionally untouched.
+        """
+        panda_id = getattr(self, "panda", None)
+        parent_id = getattr(self, "assembly_parent_id", None)
+        if panda_id is None or parent_id is None:
+            self.parent_gripper_collision_disabled = False
+            return
+
+        enable_flag = 1 if bool(enabled) else 0
+        num_robot_joints = self.bullet_client.getNumJoints(panda_id)
+        configured_links = getattr(
+            self,
+            "parent_gripper_collision_links",
+            (8, 9, 10, pandaEndEffectorIndex),
+        )
+
+        for robot_link in configured_links:
+            robot_link = int(robot_link)
+            if robot_link < -1 or robot_link >= num_robot_joints:
+                if getattr(self, "object_in_hand_debug", False):
+                    print(
+                        "Skipping invalid parent/gripper collision link:",
+                        robot_link,
+                    )
+                continue
+            self.bullet_client.setCollisionFilterPair(
+                bodyUniqueIdA=panda_id,
+                bodyUniqueIdB=parent_id,
+                linkIndexA=robot_link,
+                linkIndexB=-1,
+                enableCollision=enable_flag,
+            )
+
+        self.parent_gripper_collision_disabled = not bool(enabled)
+
     def remove_parent_grasp_constraint(self):
-        """Remove the rigid parent-to-gripper attachment, if one exists."""
+        """Remove rigid attachment and restore parent/gripper collisions."""
         constraint_id = getattr(self, "parent_grasp_constraint_id", None)
         if constraint_id is not None:
             try:
@@ -372,6 +422,14 @@ class AssemblySim(object):
                 pass
         self.parent_grasp_constraint_id = None
         self.grasp_parent_to_ee = None
+
+        # Restore only the pairs that this class may have disabled.
+        try:
+            self.set_parent_gripper_collision_enabled(True)
+        except Exception:
+            # This can happen during scene teardown after a body was already
+            # removed.  The next loaded body starts with collisions enabled.
+            self.parent_gripper_collision_disabled = False
 
     def get_ee_to_parent_transform(self, ee_pos=None, ee_orn=None):
         """Return the parent-object pose expressed in the EE link frame."""
@@ -505,18 +563,31 @@ class AssemblySim(object):
             randomized_base_pos,
             randomized_base_orn,
         )
-        self.parent_grasp_constraint_id = self.bullet_client.createConstraint(
-            parentBodyUniqueId=self.panda,
-            parentLinkIndex=pandaEndEffectorIndex,
-            childBodyUniqueId=self.assembly_parent_id,
-            childLinkIndex=-1,
-            jointType=self.bullet_client.JOINT_FIXED,
-            jointAxis=[0.0, 0.0, 0.0],
-            parentFramePosition=ee_to_base_pos,
-            childFramePosition=[0.0, 0.0, 0.0],
-            parentFrameOrientation=ee_to_base_orn,
-            childFrameOrientation=[0.0, 0.0, 0.0, 1.0],
-        )
+        # JOINT_FIXED does not automatically ignore collisions.  Disable only
+        # parent-vs-gripper-neighborhood contacts before creating the rigid
+        # attachment; all other parent collisions remain enabled.
+        if self.disable_parent_gripper_collision:
+            self.set_parent_gripper_collision_enabled(False)
+        else:
+            self.set_parent_gripper_collision_enabled(True)
+
+        try:
+            self.parent_grasp_constraint_id = self.bullet_client.createConstraint(
+                parentBodyUniqueId=self.panda,
+                parentLinkIndex=pandaEndEffectorIndex,
+                childBodyUniqueId=self.assembly_parent_id,
+                childLinkIndex=-1,
+                jointType=self.bullet_client.JOINT_FIXED,
+                jointAxis=[0.0, 0.0, 0.0],
+                parentFramePosition=ee_to_base_pos,
+                childFramePosition=[0.0, 0.0, 0.0],
+                parentFrameOrientation=ee_to_base_orn,
+                childFrameOrientation=[0.0, 0.0, 0.0, 1.0],
+            )
+        except Exception:
+            # Do not leave collision filtering active if attachment creation fails.
+            self.set_parent_gripper_collision_enabled(True)
+            raise
 
         # Cache parent-object -> EE for all subsequent expert targets.
         cached_pos, cached_orn = self.bullet_client.invertTransform(
@@ -533,6 +604,10 @@ class AssemblySim(object):
                 "delta_pos_ee=", np.round(delta_pos, 6),
                 "delta_euler_deg=", np.round(np.degrees(delta_euler), 3),
                 "constraint_id=", self.parent_grasp_constraint_id,
+                "parent_gripper_collision_disabled=",
+                self.parent_gripper_collision_disabled,
+                "filtered_robot_links=",
+                self.parent_gripper_collision_links,
             )
 
     def get_ee_pose_for_parent_pose(
@@ -671,6 +746,10 @@ class AssemblySim(object):
                    object_in_hand_pitch_jit=0.0174533,
                    object_in_hand_yaw_jit=0.0349066,
                    object_in_hand_debug=False,
+                   # JOINT_FIXED does not disable collision.  Filter only the
+                   # parent against these local Panda gripper/hand links.
+                   disable_parent_gripper_collision=True,
+                   parent_gripper_collision_links=(8, 9, 10, pandaEndEffectorIndex),
                    ):
         """Build a pick-and-assemble scene with a movable parent ring and fixed child rod."""
         del fpsa_tool_aug_root, fpsa_tool_include_base, wrench_collision_path
@@ -698,6 +777,13 @@ class AssemblySim(object):
         self.remove_parent_grasp_constraint()
         self.fix_parent_to_gripper = bool(fix_parent_to_gripper)
         self.randomize_object_in_hand_pose = bool(randomize_object_in_hand_pose)
+        self.disable_parent_gripper_collision = bool(
+            disable_parent_gripper_collision
+        )
+        self.parent_gripper_collision_links = tuple(
+            dict.fromkeys(int(link) for link in parent_gripper_collision_links)
+        )
+        self.parent_gripper_collision_disabled = False
         self.object_in_hand_pos_jit = np.array(
             [object_in_hand_x_jit, object_in_hand_y_jit, object_in_hand_z_jit],
             dtype=float,
@@ -959,6 +1045,8 @@ class AssemblySim(object):
         )
         self.parent_obj_id = self.assembly_parent_id
         self.pick_up_obj_id = self.assembly_parent_id
+        # A newly loaded body starts with normal collision behavior.
+        self.parent_gripper_collision_disabled = False
 
         # Improve physical grasp stability without rigidly attaching the object.
         for finger_link in (9, 10):
