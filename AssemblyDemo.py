@@ -18,7 +18,7 @@ timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = AssemblySim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 812553,
+Sim = AssemblySim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 60,
                 randomize_initial_ee_pose= True)
 
 Sim.make_scene(
@@ -76,6 +76,15 @@ Sim.make_scene(
     distractor_path_clearance = 0.06,
     # at least 10 pixel of the target object
     distractor_min_target_mask_pixels= 10,
+    fix_parent_to_gripper=True,
+    randomize_object_in_hand_pose=True,
+    object_in_hand_x_jit=0.005,
+    object_in_hand_y_jit=0.005,
+    object_in_hand_z_jit=0.005,
+    object_in_hand_roll_jit=0.0174533,
+    object_in_hand_pitch_jit=0.0174533,
+    object_in_hand_yaw_jit=0.0349066,
+    object_in_hand_debug=False,
     )
 
 Sim.enable_high_quality_rendering()

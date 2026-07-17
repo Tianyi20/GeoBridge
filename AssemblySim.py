@@ -98,6 +98,13 @@ class AssemblySim(object):
         self.fisheyeCamDR = PoseDR(self.bullet_client, seed=seed)
         self.initialEePoseDR = PoseDR(self.bullet_client, seed=seed + 2000)
         self.camIntrinsicDR = IntrinsicDR(seed=seed + 3000)
+        # Post-grasp object-in-hand pose randomization. The nominal grasp target
+        # remains fixed; only the parent pose relative to the EE is perturbed
+        # after the gripper closes.
+        self.objectInHandPoseDR = PoseDR(self.bullet_client, seed=seed + 5000)
+        # Backward-compatible alias for external code that still references it.
+        self.initialGraspDR = self.objectInHandPoseDR
+        self.object_in_hand_rng = np.random.default_rng(seed + 5000)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -298,6 +305,21 @@ class AssemblySim(object):
         self.initial_child_pos = None
         self.initial_child_orn = None
 
+        # Post-grasp rigid attachment / object-in-hand DR state.
+        self.parent_grasp_constraint_id = None
+        self.grasp_parent_to_ee = None
+        self.nominal_ee_to_parent = None
+        self.randomized_ee_to_parent = None
+        self.object_in_hand_delta_pos = np.zeros(3, dtype=float)
+        self.object_in_hand_delta_euler = np.zeros(3, dtype=float)
+
+        # Defaults are overwritten by make_scene().
+        self.fix_parent_to_gripper = True
+        self.randomize_object_in_hand_pose = True
+        self.object_in_hand_pos_jit = np.array([0.002, 0.002, 0.003], dtype=float)
+        self.object_in_hand_eul_jit = np.array([0.0174533, 0.0174533, 0.0349066], dtype=float)
+        self.object_in_hand_debug = False
+
         self.prepare_state(self.state)
 
  
@@ -340,13 +362,188 @@ class AssemblySim(object):
         )
         return np.asarray(rel_pos, dtype=float), np.asarray(rel_orn, dtype=float)
 
+    def remove_parent_grasp_constraint(self):
+        """Remove the rigid parent-to-gripper attachment, if one exists."""
+        constraint_id = getattr(self, "parent_grasp_constraint_id", None)
+        if constraint_id is not None:
+            try:
+                self.bullet_client.removeConstraint(constraint_id)
+            except Exception:
+                pass
+        self.parent_grasp_constraint_id = None
+        self.grasp_parent_to_ee = None
+
+    def get_ee_to_parent_transform(self, ee_pos=None, ee_orn=None):
+        """Return the parent-object pose expressed in the EE link frame."""
+        parent_pos, parent_orn = self.get_parent_obj_pose()
+        if ee_pos is None or ee_orn is None:
+            ee_pos, ee_orn = self.get_ee_pose()
+
+        inv_ee_pos, inv_ee_orn = self.bullet_client.invertTransform(
+            np.asarray(ee_pos, dtype=float).tolist(),
+            np.asarray(ee_orn, dtype=float).tolist(),
+        )
+        rel_pos, rel_orn = self.bullet_client.multiplyTransforms(
+            inv_ee_pos,
+            inv_ee_orn,
+            parent_pos.tolist(),
+            parent_orn.tolist(),
+        )
+        return np.asarray(rel_pos, dtype=float), np.asarray(rel_orn, dtype=float)
+
+    def randomize_and_fix_parent_to_gripper(self):
+        """Sample an object-in-hand SE(3) pose and rigidly attach the parent.
+
+        The nominal grasp trajectory is executed first. At the end of
+        ``close_gripper`` we measure the actual parent-object pose in the EE
+        frame, add a small translation/orientation perturbation in that frame,
+        teleport the parent to the sampled pose, and create a fixed constraint.
+
+        No virtual force or physical slip model is used. The purpose is to
+        generate image/proprioception-to-assembly-action mappings under varied
+        object-in-hand poses.
+        """
+        if not self.fix_parent_to_gripper:
+            self.grasp_parent_to_ee = None
+            return
+
+        self.remove_parent_grasp_constraint()
+
+        ee_pos, ee_orn = self.get_ee_pose()
+        parent_true_pos, parent_true_orn = self.get_parent_obj_pose()
+        parent_base_pos, parent_base_orn = self.bullet_client.getBasePositionAndOrientation(
+            self.assembly_parent_id
+        )
+        parent_base_pos = np.asarray(parent_base_pos, dtype=float)
+        parent_base_orn = np.asarray(parent_base_orn, dtype=float)
+
+        # Nominal object pose in EE coordinates, based on the object/mesh frame
+        # used by the assembly target calculations.
+        nominal_rel_pos, nominal_rel_orn = self.get_ee_to_parent_transform(
+            ee_pos=ee_pos, ee_orn=ee_orn
+        )
+        self.nominal_ee_to_parent = (
+            nominal_rel_pos.copy(),
+            nominal_rel_orn.copy(),
+        )
+
+        if self.randomize_object_in_hand_pose:
+            delta_pos = self.object_in_hand_rng.uniform(
+                low=-self.object_in_hand_pos_jit,
+                high=self.object_in_hand_pos_jit,
+            )
+            delta_euler = self.object_in_hand_rng.uniform(
+                low=-self.object_in_hand_eul_jit,
+                high=self.object_in_hand_eul_jit,
+            )
+        else:
+            delta_pos = np.zeros(3, dtype=float)
+            delta_euler = np.zeros(3, dtype=float)
+
+        # Translation and rotation are perturbed independently in the EE frame.
+        # This avoids rotating the nominal grasp translation around the EE origin.
+        randomized_rel_pos = nominal_rel_pos + delta_pos
+        randomized_rel_orn = (
+            R.from_euler("xyz", delta_euler) * R.from_quat(nominal_rel_orn)
+        ).as_quat()
+        randomized_rel_orn /= np.linalg.norm(randomized_rel_orn)
+
+        self.object_in_hand_delta_pos = delta_pos.copy()
+        self.object_in_hand_delta_euler = delta_euler.copy()
+        self.randomized_ee_to_parent = (
+            randomized_rel_pos.copy(),
+            randomized_rel_orn.copy(),
+        )
+
+        # Desired object/mesh-frame pose in world coordinates.
+        randomized_true_pos, randomized_true_orn = self.bullet_client.multiplyTransforms(
+            ee_pos.tolist(),
+            ee_orn.tolist(),
+            randomized_rel_pos.tolist(),
+            randomized_rel_orn.tolist(),
+        )
+
+        # Preserve the fixed transform from the object's true/mesh frame to the
+        # PyBullet base frame. resetBasePositionAndOrientation and the fixed
+        # constraint operate on the base frame, while assembly targets use the
+        # true/mesh frame returned by get_true_PositionAndOrientation().
+        inv_true_pos, inv_true_orn = self.bullet_client.invertTransform(
+            parent_true_pos.tolist(), parent_true_orn.tolist()
+        )
+        true_to_base_pos, true_to_base_orn = self.bullet_client.multiplyTransforms(
+            inv_true_pos,
+            inv_true_orn,
+            parent_base_pos.tolist(),
+            parent_base_orn.tolist(),
+        )
+        randomized_base_pos, randomized_base_orn = self.bullet_client.multiplyTransforms(
+            randomized_true_pos,
+            randomized_true_orn,
+            true_to_base_pos,
+            true_to_base_orn,
+        )
+
+        self.bullet_client.resetBasePositionAndOrientation(
+            self.assembly_parent_id,
+            randomized_base_pos,
+            randomized_base_orn,
+        )
+        self.bullet_client.resetBaseVelocity(
+            self.assembly_parent_id,
+            linearVelocity=[0.0, 0.0, 0.0],
+            angularVelocity=[0.0, 0.0, 0.0],
+        )
+
+        # Fixed-constraint parent frame is the EE link; child frame is the
+        # PyBullet parent-object base.
+        inv_ee_pos, inv_ee_orn = self.bullet_client.invertTransform(
+            ee_pos.tolist(), ee_orn.tolist()
+        )
+        ee_to_base_pos, ee_to_base_orn = self.bullet_client.multiplyTransforms(
+            inv_ee_pos,
+            inv_ee_orn,
+            randomized_base_pos,
+            randomized_base_orn,
+        )
+        self.parent_grasp_constraint_id = self.bullet_client.createConstraint(
+            parentBodyUniqueId=self.panda,
+            parentLinkIndex=pandaEndEffectorIndex,
+            childBodyUniqueId=self.assembly_parent_id,
+            childLinkIndex=-1,
+            jointType=self.bullet_client.JOINT_FIXED,
+            jointAxis=[0.0, 0.0, 0.0],
+            parentFramePosition=ee_to_base_pos,
+            childFramePosition=[0.0, 0.0, 0.0],
+            parentFrameOrientation=ee_to_base_orn,
+            childFrameOrientation=[0.0, 0.0, 0.0, 1.0],
+        )
+
+        # Cache parent-object -> EE for all subsequent expert targets.
+        cached_pos, cached_orn = self.bullet_client.invertTransform(
+            randomized_rel_pos.tolist(), randomized_rel_orn.tolist()
+        )
+        self.grasp_parent_to_ee = (
+            np.asarray(cached_pos, dtype=float),
+            np.asarray(cached_orn, dtype=float),
+        )
+
+        if self.object_in_hand_debug:
+            print(
+                "object-in-hand DR:",
+                "delta_pos_ee=", np.round(delta_pos, 6),
+                "delta_euler_deg=", np.round(np.degrees(delta_euler), 3),
+                "constraint_id=", self.parent_grasp_constraint_id,
+            )
+
     def get_ee_pose_for_parent_pose(
         self, parent_pos, parent_orn, parent_to_ee=None
     ):
-        """Convert a desired parent pose into an EE pose.
+        """Convert a desired parent-object pose into an EE pose.
 
-        Runtime calls leave ``parent_to_ee`` unset, forcing a fresh transform
-        measurement from the current simulated parent and EE poses.
+        Runtime assembly calls leave ``parent_to_ee`` unset and re-measure the
+        transform every step. After rigid attachment this transform should be
+        constant apart from tiny solver noise, matching the continuously
+        measured parent-to-EE mapping used by the scripted expert.
         """
         if parent_to_ee is None:
             parent_to_ee = self.get_parent_to_ee_transform()
@@ -454,15 +651,26 @@ class AssemblySim(object):
                    distractor_clearance=0.04,
                    distractor_path_clearance=0.04,
                    distractor_min_target_mask_pixels=1,
-                   parent_mass=0.5,
+                   parent_mass=0.85,
                    child_mass=0.2,
-                   parent_lateral_friction=0.6,
+                   parent_lateral_friction=0.9,
                    child_lateral_friction=0.8,
                    child_rgba=(0.90, 0.03, 0.03, 1.0),
                    assembly_axis_local=(0.0, 0.0, 1.0),
                    child_to_parent_target_pos=(0.0, 0.0, 0.0),
                    child_to_parent_target_euler=(0.0, 0.0, 0.0),
                    safe_assembly_approach=0.10,
+                   # Post-grasp object-in-hand domain randomization. Nominal
+                   # pregrasp/grasp targets are never randomized.
+                   fix_parent_to_gripper=True,
+                   randomize_object_in_hand_pose=True,
+                   object_in_hand_x_jit=0.002,
+                   object_in_hand_y_jit=0.002,
+                   object_in_hand_z_jit=0.003,
+                   object_in_hand_roll_jit=0.0174533,
+                   object_in_hand_pitch_jit=0.0174533,
+                   object_in_hand_yaw_jit=0.0349066,
+                   object_in_hand_debug=False,
                    ):
         """Build a pick-and-assemble scene with a movable parent ring and fixed child rod."""
         del fpsa_tool_aug_root, fpsa_tool_include_base, wrench_collision_path
@@ -484,6 +692,28 @@ class AssemblySim(object):
         self.assembly_child_path = assembly_child_path
         self.initial_grasp_path = initial_grasp_path
         self.safe_assembly_approach = float(safe_assembly_approach)
+
+        # Clear any attachment left by a previous scene build, then configure
+        # the post-grasp object-in-hand randomization for this episode.
+        self.remove_parent_grasp_constraint()
+        self.fix_parent_to_gripper = bool(fix_parent_to_gripper)
+        self.randomize_object_in_hand_pose = bool(randomize_object_in_hand_pose)
+        self.object_in_hand_pos_jit = np.array(
+            [object_in_hand_x_jit, object_in_hand_y_jit, object_in_hand_z_jit],
+            dtype=float,
+        )
+        self.object_in_hand_eul_jit = np.array(
+            [object_in_hand_roll_jit, object_in_hand_pitch_jit, object_in_hand_yaw_jit],
+            dtype=float,
+        )
+        if np.any(self.object_in_hand_pos_jit < 0.0):
+            raise ValueError("object-in-hand position jitter ranges must be non-negative")
+        if np.any(self.object_in_hand_eul_jit < 0.0):
+            raise ValueError("object-in-hand Euler jitter ranges must be non-negative")
+        self.object_in_hand_debug = bool(object_in_hand_debug)
+        self.grasp_parent_to_ee = None
+        self.nominal_ee_to_parent = None
+        self.randomized_ee_to_parent = None
 
         self.assembly_axis_local = np.asarray(assembly_axis_local, dtype=float)
         axis_norm = np.linalg.norm(self.assembly_axis_local)
@@ -1094,6 +1324,13 @@ class AssemblySim(object):
             self.target_gripper = self.GRIPPER_CLOSED
 
     def switch_to_next_state(self):
+        # Execute nominal grasp first. Once close_gripper completes, perturb the
+        # measured object-in-hand pose and rigidly attach the parent before lift.
+        # Data collection can remain continuous; this intentionally models a
+        # sampled post-grasp state rather than physical slip dynamics.
+        if self.state == "close_gripper":
+            self.randomize_and_fix_parent_to_gripper()
+
         self.state_idx += 1
         if self.state_idx >= len(self.states):
             self.done = True
@@ -1126,8 +1363,9 @@ class AssemblySim(object):
                 self.parent_motion_target_orn,
                 s,
             )
-            # Measure parent -> EE again on every simulation step. If the ring
-            # slips in the fingers, the commanded EE pose changes immediately.
+            # Continuously measure parent-object -> EE. With the rigid
+            # post-grasp constraint this is effectively fixed, while the expert
+            # still follows the same live transform-composition path.
             self.target_pos, self.target_orn = self.get_ee_pose_for_parent_pose(
                 desired_parent_pos, desired_parent_orn
             )
@@ -1688,6 +1926,8 @@ class AssemblySim(object):
         return any(c[8] <= float(max_contact_distance) for c in contacts)
 
     def is_parent_grasped(self):
+        if self.parent_grasp_constraint_id is not None:
+            return True
         contacts = self.bullet_client.getContactPoints(
             bodyA=self.panda,
             bodyB=self.assembly_parent_id,
