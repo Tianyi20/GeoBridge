@@ -748,6 +748,15 @@ class AssemblySim(object):
                 recolor_palette=object_recolor_palette,
                 recolor_target_color=object_recolor_target_color,
                 specular_range=object_specular_range,
+                alpha=None,)
+            
+            self.object_color_cfg = self.objectColorDR.sample_and_apply_object_color_randomization(
+                body_id=self.assembly_child_id,
+                mode=object_color_mode,
+                strength=object_color_strength,
+                recolor_palette=object_recolor_palette,
+                recolor_target_color=object_recolor_target_color,
+                specular_range=object_specular_range,
                 alpha=None,
             )
         else:
