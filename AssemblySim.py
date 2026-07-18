@@ -308,6 +308,12 @@ class AssemblySim(object):
         # Post-grasp rigid attachment / object-in-hand DR state.
         self.parent_grasp_constraint_id = None
         self.grasp_parent_to_ee = None
+        # Finger-joint position measured at the end of the physical nominal
+        # close_gripper phase. After parent/gripper collisions are filtered and
+        # the parent is rigidly attached, keep commanding this width instead of
+        # allowing the fingers to collapse to the fully-closed target (0.0).
+        self.nominal_grasp_finger_width = None
+        self.hold_nominal_gripper_width_after_attach = True
         self.nominal_ee_to_parent = None
         self.randomized_ee_to_parent = None
         self.object_in_hand_delta_pos = np.zeros(3, dtype=float)
@@ -422,6 +428,7 @@ class AssemblySim(object):
                 pass
         self.parent_grasp_constraint_id = None
         self.grasp_parent_to_ee = None
+        self.nominal_grasp_finger_width = None
 
         # Restore only the pairs that this class may have disabled.
         try:
@@ -466,6 +473,17 @@ class AssemblySim(object):
             return
 
         self.remove_parent_grasp_constraint()
+
+        # close_gripper has just completed with normal parent/finger collision.
+        # Capture the physically achieved nominal grasp width before teleporting
+        # the parent, filtering collision, or creating the rigid attachment.
+        # The current simulator convention uses each finger joint position as
+        # the gripper width command, so use the symmetric mean as the hold target.
+        nominal_finger_qpos = np.array([
+            self.bullet_client.getJointState(self.panda, 9)[0],
+            self.bullet_client.getJointState(self.panda, 10)[0],
+        ], dtype=float)
+        self.nominal_grasp_finger_width = float(np.mean(nominal_finger_qpos))
 
         ee_pos, ee_orn = self.get_ee_pose()
         parent_true_pos, parent_true_orn = self.get_parent_obj_pose()
@@ -585,9 +603,17 @@ class AssemblySim(object):
                 childFrameOrientation=[0.0, 0.0, 0.0, 1.0],
             )
         except Exception:
-            # Do not leave collision filtering active if attachment creation fails.
+            # Do not leave collision filtering or a stale width hold active if
+            # attachment creation fails.
             self.set_parent_gripper_collision_enabled(True)
+            self.nominal_grasp_finger_width = None
             raise
+
+        # Immediately replace the old fully-closed motor target with the width
+        # achieved during nominal physical grasping. Subsequent calls to
+        # set_gripper_state(CLOSED) will keep re-applying this same target.
+        if self.hold_nominal_gripper_width_after_attach:
+            self.set_gripper_width(self.nominal_grasp_finger_width)
 
         # Cache parent-object -> EE for all subsequent expert targets.
         cached_pos, cached_orn = self.bullet_client.invertTransform(
@@ -608,6 +634,8 @@ class AssemblySim(object):
                 self.parent_gripper_collision_disabled,
                 "filtered_robot_links=",
                 self.parent_gripper_collision_links,
+                "nominal_grasp_finger_width=",
+                round(float(self.nominal_grasp_finger_width), 6),
             )
 
     def get_ee_pose_for_parent_pose(
@@ -750,6 +778,9 @@ class AssemblySim(object):
                    # parent against these local Panda gripper/hand links.
                    disable_parent_gripper_collision=True,
                    parent_gripper_collision_links=(8, 9, 10, pandaEndEffectorIndex),
+                   # Keep the physically achieved nominal grasp width after the
+                   # parent is fixed and parent/gripper collision is filtered.
+                   hold_nominal_gripper_width_after_attach=True,
                    ):
         """Build a pick-and-assemble scene with a movable parent ring and fixed child rod."""
         del fpsa_tool_aug_root, fpsa_tool_include_base, wrench_collision_path
@@ -784,6 +815,10 @@ class AssemblySim(object):
             dict.fromkeys(int(link) for link in parent_gripper_collision_links)
         )
         self.parent_gripper_collision_disabled = False
+        self.hold_nominal_gripper_width_after_attach = bool(
+            hold_nominal_gripper_width_after_attach
+        )
+        self.nominal_grasp_finger_width = None
         self.object_in_hand_pos_jit = np.array(
             [object_in_hand_x_jit, object_in_hand_y_jit, object_in_hand_z_jit],
             dtype=float,
@@ -1263,9 +1298,31 @@ class AssemblySim(object):
             )
 
     def set_gripper_state(self, state):
-        """High-level binary gripper command: 1=open, 0=closed."""
-        self.target_gripper = self.GRIPPER_OPEN if float(state) >= 0.5 else self.GRIPPER_CLOSED
-        self.set_gripper_width(self.gripper_state_to_width(self.target_gripper))
+        """High-level binary gripper command: 1=open, 0=closed.
+
+        After the parent has been rigidly attached, the policy/action label stays
+        CLOSED (0), but the simulated finger motor target is held at the actual
+        width reached by the preceding nominal physical grasp. This prevents the
+        fingers from snapping shut when parent/gripper collision is disabled.
+        """
+        self.target_gripper = (
+            self.GRIPPER_OPEN if float(state) >= 0.5 else self.GRIPPER_CLOSED
+        )
+
+        hold_width = getattr(self, "nominal_grasp_finger_width", None)
+        should_hold_nominal_width = (
+            self.target_gripper == self.GRIPPER_CLOSED
+            and getattr(self, "hold_nominal_gripper_width_after_attach", False)
+            and getattr(self, "parent_grasp_constraint_id", None) is not None
+            and hold_width is not None
+        )
+
+        if should_hold_nominal_width:
+            self.set_gripper_width(hold_width)
+        else:
+            self.set_gripper_width(
+                self.gripper_state_to_width(self.target_gripper)
+            )
 
     def set_gripper(self, command):
         """Compatibility wrapper.
