@@ -1162,10 +1162,13 @@ class ShapeAugmentor:
         use_distance_weights=True,
         quat_order="xyzw",
         return_format="dict",
+        patch_method = "k_ring",
     ):
         """
         Convenience wrapper for self.initial_grasp_guess.
-
+        patch_method:
+            "k_ring": use topological k-ring around the closest face. 
+            "xyz": use KDTree xyz-nearest vertices around the input point/TCP.  
         return_format:
             "T":    return 4x4 SE(3)
             "dict": return dict with T_mesh_hand_tcp, t, R, quat
@@ -1176,6 +1179,7 @@ class ShapeAugmentor:
             k_ring=k_ring,
             use_distance_weights=use_distance_weights,
             quat_order=quat_order,
+            patch_method=patch_method,
         )
 
         if return_format == "T":

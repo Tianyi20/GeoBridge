@@ -6,7 +6,7 @@ import math
 import pybullet_data
 from VisualDR import (
     LightingDR, DistractorDR, PoseDR, ObjectColorDR,
-    ImgNoiseDR, IntrinsicDR, TextureDR,
+    ImgNoiseDR, IntrinsicDR, TextureDR, FPSAObjectDR
 )
 from pybullet_utility import (
     load_models,
@@ -103,8 +103,7 @@ class AssemblySim(object):
         # after the gripper closes.
         self.objectInHandPoseDR = PoseDR(self.bullet_client, seed=seed + 5000)
         # Backward-compatible alias for external code that still references it.
-        self.initialGraspDR = self.objectInHandPoseDR
-        self.object_in_hand_rng = np.random.default_rng(seed + 5000)
+        self.fpsaObjectDR = FPSAObjectDR(seed=seed + 6000)
 
         self.offset = np.array(offset)
         self.control_dt = control_dt
@@ -504,25 +503,29 @@ class AssemblySim(object):
         )
 
         if self.randomize_object_in_hand_pose:
-            delta_pos = self.object_in_hand_rng.uniform(
-                low=-self.object_in_hand_pos_jit,
-                high=self.object_in_hand_pos_jit,
+            randomized_rel_pos, randomized_rel_orn = (
+                self.objectInHandPoseDR.sample_SE3_randomization(
+                    pos=nominal_rel_pos,
+                    orn=nominal_rel_orn,
+                    x_jitter_range=self.object_in_hand_pos_jit[0],
+                    y_jitter_range=self.object_in_hand_pos_jit[1],
+                    z_jitter_range=self.object_in_hand_pos_jit[2],
+                    x_euler_jitter_range=self.object_in_hand_eul_jit[0],
+                    y_euler_jitter_range=self.object_in_hand_eul_jit[1],
+                    z_euler_jitter_range=self.object_in_hand_eul_jit[2],
+                )
             )
-            delta_euler = self.object_in_hand_rng.uniform(
-                low=-self.object_in_hand_eul_jit,
-                high=self.object_in_hand_eul_jit,
-            )
+            randomized_rel_pos = np.asarray(randomized_rel_pos, dtype=float)
+            randomized_rel_orn = np.asarray(randomized_rel_orn, dtype=float)
         else:
-            delta_pos = np.zeros(3, dtype=float)
-            delta_euler = np.zeros(3, dtype=float)
+            randomized_rel_pos = nominal_rel_pos.copy()
+            randomized_rel_orn = nominal_rel_orn.copy()
 
-        # Translation and rotation are perturbed independently in the EE frame.
-        # This avoids rotating the nominal grasp translation around the EE origin.
-        randomized_rel_pos = nominal_rel_pos + delta_pos
-        randomized_rel_orn = (
-            R.from_euler("xyz", delta_euler) * R.from_quat(nominal_rel_orn)
-        ).as_quat()
-        randomized_rel_orn /= np.linalg.norm(randomized_rel_orn)
+        delta_pos = randomized_rel_pos - nominal_rel_pos
+        delta_euler = (
+            R.from_quat(nominal_rel_orn).inv()
+            * R.from_quat(randomized_rel_orn)
+        ).as_euler("xyz")
 
         self.object_in_hand_delta_pos = delta_pos.copy()
         self.object_in_hand_delta_euler = delta_euler.copy()
@@ -692,8 +695,8 @@ class AssemblySim(object):
                    assembly_child_path=None,
                    assembly_child_collision_path=None,
                    initial_grasp_path=None,
-                   # Kept only so the existing demo remains call-compatible.
-                   # FPSA is intentionally disabled for AssemblySim.
+                   # FPSA assembly-parent object domain randomization.
+                   # Samples visual mesh, COACD collision mesh, and grasp YAML atomically.
                    if_FPSA_tool=False,
                    fpsa_tool_aug_root=None,
                    fpsa_tool_include_base=False,
@@ -783,12 +786,9 @@ class AssemblySim(object):
                    hold_nominal_gripper_width_after_attach=True,
                    ):
         """Build a pick-and-assemble scene with a movable parent ring and fixed child rod."""
-        del fpsa_tool_aug_root, fpsa_tool_include_base, wrench_collision_path
+        del wrench_collision_path
         del randomize_wrench_color, wrench_color_mode, wrench_color_strength
-        # Explicitly hard-disable FPSA as requested, even if an old caller passes True.
-        self.if_FPSA_tool = False
-        if if_FPSA_tool:
-            print("AssemblySim: if_FPSA_tool=True was ignored; FPSA is hard-disabled.")
+        self.if_FPSA_tool = bool(if_FPSA_tool)
 
         if assembly_parent_path is None:
             raise ValueError("assembly_parent_path must be provided")
@@ -796,6 +796,25 @@ class AssemblySim(object):
             raise ValueError("assembly_child_path must be provided")
         if initial_grasp_path is None:
             raise ValueError("initial_grasp_path must be provided")
+
+        self.fpsa_sample = None
+        if self.if_FPSA_tool:
+            if fpsa_tool_aug_root is None:
+                raise ValueError(
+                    "if_FPSA_tool=True requires fpsa_tool_aug_root"
+                )
+            self.fpsa_sample = self.fpsaObjectDR.sample_asset(
+                base_mesh_path=assembly_parent_path,
+                base_collision_path=assembly_parent_collision_path,
+                base_grasp_path=initial_grasp_path,
+                fpsa_aug_root=fpsa_tool_aug_root,
+                include_base=bool(fpsa_tool_include_base),
+            )
+            assembly_parent_path = self.fpsa_sample["obj_path"]
+            assembly_parent_collision_path = self.fpsa_sample["collision_path"]
+            initial_grasp_path = self.fpsa_sample["grasp_path"]
+
+            ic(assembly_parent_path, assembly_parent_collision_path)
 
         self.env_mesh_path = env_mesh_path
         self.assembly_parent_path = assembly_parent_path

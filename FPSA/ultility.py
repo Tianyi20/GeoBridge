@@ -6,8 +6,6 @@ from scipy.spatial.transform import Rotation
 import numpy as np
 import coacd
 import trimesh
-from typing import Union
-
 
 def load_initial_grasp_pose(path: str):
     """
@@ -108,9 +106,9 @@ def coacd_convex_decomposition(obj_filename,threshold = 0.03, preprocess_resolut
 
 
 def save_transform_yaml(
-    yaml_path: Union[str, Path],
-    transform: np.ndarray,
-    key: str = "wrench_to_tcp_T",
+    yaml_path,
+    transform,
+    key,
 ) -> None:
     """
     保存 4x4 齐次变换矩阵到 YAML 文件。
@@ -141,8 +139,8 @@ def save_transform_yaml(
 
 
 def load_transform_yaml(
-    yaml_path: Union[str, Path],
-    key: str = "wrench_to_tcp_T",
+    yaml_path,
+    key,
 ) -> np.ndarray:
     """
     从 YAML 文件读取 4x4 齐次变换矩阵。

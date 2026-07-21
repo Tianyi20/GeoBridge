@@ -18,7 +18,7 @@ timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = AssemblySim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 860,
+Sim = AssemblySim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 8199959,
                 randomize_initial_ee_pose= True)
 
 Sim.make_scene(
@@ -27,6 +27,9 @@ Sim.make_scene(
     assembly_parent_collision_path = None,
     assembly_child_path = "data/objects/assembly/child/assembly_child.obj",
     initial_grasp_path = "data/objects/assembly/tool/tool_grasp.yaml",
+    if_FPSA_tool=True,
+    fpsa_tool_aug_root="data/objects/assembly/tool/assemblyTool_aug_outputs",
+    fpsa_tool_include_base=True,
     parentobj_pose_base = [0.45, -0.1, 0.015],
     parentobj_euler_base = [0.0, 0.0, -np.pi/2.0],
     childobj_pose_base = [0.7, -0.1, 0.015],
@@ -78,8 +81,8 @@ Sim.make_scene(
     distractor_min_target_mask_pixels= 10,
     fix_parent_to_gripper=True,
     randomize_object_in_hand_pose=True,
-    object_in_hand_x_jit=0.025,
-    object_in_hand_y_jit=0.025,
+    object_in_hand_x_jit=0.02,
+    object_in_hand_y_jit=0.02,
     object_in_hand_z_jit=0.02,
     object_in_hand_roll_jit=0.0174533,
     object_in_hand_pitch_jit=0.0174533,
@@ -104,16 +107,16 @@ try:
         sim_step += 1
         time.sleep(0.005)
         if sim_step % record_every_n_sim_steps == 0:
-            # RGB = Sim.get_eye_in_hand_image()
+            RGB = Sim.get_eye_in_hand_image()
             # RGB_agent = Sim.direct_get_agent_view()
 
-            # cv2.imwrite("temp_fisheye.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
+            cv2.imwrite("temp_fisheye.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
             # cv2.imwrite("temp_agentview.png", cv2.cvtColor(RGB_agent, cv2.COLOR_RGBA2BGRA))
-            obs = Sim.collect_observation(direct= True,
-                                          use_eye_in_hand= False)
+            # obs = Sim.collect_observation(direct= True,
+            #                               use_eye_in_hand= False)
 
             record_idx += 1
-            print(obs["robot0_gripper_qpos"])
+            # print(obs["robot0_gripper_qpos"])
             print(record_idx)
         # time.sleep(0.05)
             print(Sim.is_success(debug= False))

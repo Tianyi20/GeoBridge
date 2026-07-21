@@ -1,0 +1,83 @@
+# FPSA manual annotation.
+# Edit `range` manually before running FPSA_batch_randomizer.py.
+# `constrained_ids` includes `reshaped_ids`.
+# `reshaped_vector` and `range` are per-handle and match the order of `reshaped_ids`.
+
+object:
+  obj_path: /home/iadc/GeoBridge/data/objects/assembly/tool/tool.obj
+  name: tool
+
+solver:
+  max_iters: 120
+  method_max_iters:
+    APAP: 200
+    slippage: 120
+  k_ring: 3
+  use_distance_weights: true
+  quat_order: xyzw
+  patch_method: k_ring
+
+sampler:
+  n_shapes: 255
+  seed: 43
+  max_workers: 20
+  mp_start_method: spawn
+  label_mode: balanced       # balanced/random_one/random_k/all
+  labels: [chain_x_and_slippage, APAP_x_streching, slippage_y_streching]
+  labels_per_shape: 1
+  value_sampling: linspace   # linspace/random
+  sampling_strategy: cartesian
+  linspace_points_per_stage: 15
+
+output:
+  root: assemblyTool_aug_outputs
+  layout: per_shape_dir      # per_shape_dir/flat
+  overwrite: true
+  write_coacd: true
+  save_raw_deformed: false
+  save_debug: true
+
+deformations:
+  - label: chain_x_and_slippage
+    type: chain
+    chain: APAP_x_streching, slippage_y_streching
+    
+  - label: APAP_x_streching
+    type: displacement
+    method: slippage
+    description: Manually annotated FPSA deformation label
+    constrained_ids: [17, 15, 19, 13, 208, 164, 105, 106, 107, 108, 103, 118, 119,
+      120, 121, 122, 128, 78, 93, 92, 91, 90, 89, 88, 123, 18, 16, 14, 12, 81, 82,
+      111, 112, 109, 101, 102, 100, 85, 285, 115, 117, 116, 75, 77, 76, 10, 21, 20,
+      126, 66, 39, 184, 173, 48, 46, 45, 6, 149, 148, 147, 57, 40, 41, 28, 29, 1,
+      169, 165, 26, 51, 191, 273, 281, 278, 262, 4, 5, 52, 9, 11, 23, 22, 71, 72,
+      73, 133, 134, 135, 355, 354]
+    reshaped_ids: [9, 11, 23, 22, 71, 72, 73, 133, 134, 135, 355, 354]
+    reshaped_vector:
+      - [1.0, 0.0, 0.0]
+    range:
+      - [-0.04, 0.04]
+    coupled: false
+    normalize_vector: true
+    distribution: uniform
+    weight: 1.0
+    
+  - label: slippage_y_streching
+    type: displacement
+    method: slippage
+    description: Manually annotated FPSA deformation label
+    constrained_ids: [17, 15, 19, 13, 208, 164, 105, 106, 107, 108, 103, 118, 119,
+      120, 121, 122, 128, 78, 93, 92, 91, 90, 89, 88, 123, 18, 16, 14, 12, 81, 82,
+      111, 112, 109, 101, 102, 100, 85, 285, 115, 117, 116, 75, 77, 76, 10, 21, 20,
+      126, 66, 39, 184, 173, 48, 46, 45, 6, 149, 148, 147, 57, 40, 41, 28, 29, 1,
+      169, 165, 26, 51, 191, 273, 281, 278, 262, 4, 5, 52, 9, 11, 23, 22, 71, 72,
+      73, 133, 134, 135, 355, 354]
+    reshaped_ids: [9, 11, 23, 22, 71, 72, 73, 133, 134, 135, 355, 354]
+    reshaped_vector:
+      - [0.0, 1.0, 0.0]
+    range:
+      - [-0.04, 0.03]
+    coupled: false
+    normalize_vector: true
+    distribution: uniform
+    weight: 1.0
