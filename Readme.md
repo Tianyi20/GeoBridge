@@ -50,6 +50,16 @@ python step_to_high_quality_obj.py \
         --output assembly_child.obj \
         --target-divisions 20 \
         --curvature 8 \
+
+parallel gripper home joints
+
+[np.float64(-1.5181891389821258),
+np.float64(1.5913041972968864),
+np.float64(1.5482446948770892),
+np.float64(-1.6774729466856573),
+np.float64(-0.0008096577587373927),
+np.float64(1.755319486025307),
+np.float64(0.8361516126271482)]
         --scale-output 0.001
 
 ```
