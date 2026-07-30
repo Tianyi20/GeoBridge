@@ -12,9 +12,9 @@ This version is intentionally simple and stable:
 
 Typical usage:
     python FPSA_annotation_helper_gui_axis.py \
-        --mesh /home/iadc/GeoBridge/data/objects/assembly/tool/tool.obj \
-        --label assembly_streching \
-        --out assembly_streching.yaml
+        --mesh /home/iadc/GeoBridge/data/objects/gear_extraction/gear/gear.obj \
+        --label gear_streching \
+        --out gear_streching.yaml
 
 Controls:
     C             : constrained/fixed vertex picking mode
