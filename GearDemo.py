@@ -30,6 +30,10 @@ sim.make_scene(
     gear_collision_path=None,
     supportor_collision_path=None,
 
+    if_FPSA_gear=True,
+    fpsa_gear_aug_root="./data/objects/gear_extraction/gear/Gear_aug_outputs",
+    fpsa_gear_include_base=True,
+
     # The gear origin is located at supportor-local (0, 0, 0.31).
     supportor_pose_base=[0.62, 0.10, 0.015],
     supportor_euler_base=[0.0, 0.0, 0.0],
@@ -103,15 +107,15 @@ try:
         p.stepSimulation()
         sim.step()
         sim_step += 1
-        # time.sleep(0.01)
+        time.sleep(0.01)
 
         if sim_step % record_every_n_sim_steps == 0:
-            eye_rgb = sim.get_eye_in_hand_image()
-            RGB_agent = sim.direct_get_agent_view()
+            # eye_rgb = sim.get_eye_in_hand_image()
+            # RGB_agent = sim.direct_get_agent_view()
 
-            cv2.imwrite("temp_fisheye.png",cv2.cvtColor(eye_rgb, cv2.COLOR_RGB2BGR))
+            # cv2.imwrite("temp_fisheye.png",cv2.cvtColor(eye_rgb, cv2.COLOR_RGB2BGR))
 
-            cv2.imwrite("temp_agentview.png",cv2.cvtColor(RGB_agent, cv2.COLOR_RGBA2BGRA))
+            # cv2.imwrite("temp_agentview.png",cv2.cvtColor(RGB_agent, cv2.COLOR_RGBA2BGRA))
 
             record_idx += 1
             print(record_idx, sim.state, sim.is_success(debug=False))

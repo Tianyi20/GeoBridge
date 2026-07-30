@@ -1,4 +1,4 @@
-name: Assembly
+name: Gear_extraction
 
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
@@ -21,11 +21,11 @@ shape_meta: &shape_meta
 
 task_name: &task_name Assembly
 dataset_type: &dataset_type ph
-dataset_path: &dataset_path ./data/DP_data/FPSA_Assembly/Assembly.zarr
+dataset_path: &dataset_path ./data/DP_data/Gear/Gear.zarr
 abs_action: &abs_action True
 
 env_runner:
-  _target_: diffusion_policy.env_runner.Assembly_fisheye_runner.AssemblyEnvRunner
+  _target_: diffusion_policy.env_runner.Gear_fisheye_runner.GearEnvRunner
   # dataset_path: *dataset_path
   # shape_meta: *shape_meta
   use_agent_cam: True

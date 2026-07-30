@@ -12,6 +12,7 @@ from VisualDR import (
     ObjectColorDR,
     PoseDR,
     TextureDR,
+    FPSAObjectDR,
 )
 from pybullet_utility import (
     coacd_convex_decomposition,
@@ -104,6 +105,9 @@ class GearSim(object):
             self.bullet_client,
             seed=seed + 5000,
         )
+        # FPSA gear geometry sampler. One random draw returns a consistent
+        # visual mesh, COACD collision mesh, and transferred grasp YAML.
+        self.fpsaObjectDR = FPSAObjectDR(seed=seed + 6000)
 
         self.offset = np.asarray(offset, dtype=float)
         self.control_dt = float(control_dt)
@@ -292,6 +296,7 @@ class GearSim(object):
             "lift_gear",
             "move_above_place",
             "lower_to_place",
+            "open_gripper",
             "retreat",
         ]
         self.state_durations = [
@@ -303,6 +308,7 @@ class GearSim(object):
             1.0,
             3.0,
             1.5,
+            0.25,
             0.2,
         ]
         self.state_idx = 0
@@ -710,6 +716,11 @@ class GearSim(object):
         initial_grasp_path="./data/objects/gear_extraction/gear/grasp.yaml",
         gear_collision_path=None,
         supportor_collision_path=None,
+        # FPSA gear-object domain randomization. A sampled asset bundle always
+        # keeps the visual mesh, COACD collision mesh, and grasp YAML matched.
+        if_FPSA_gear=False,
+        fpsa_gear_aug_root=None,
+        fpsa_gear_include_base=False,
         supportor_pose_base=(0.62, -0.10, 0.015),
         supportor_euler_base=(0.0, 0.0, 0.0),
         gear_to_support_pos=(0.0, 0.0, 0.31),
@@ -768,10 +779,9 @@ class GearSim(object):
         distractor_clearance=0.04,
         distractor_path_clearance=0.04,
         distractor_min_target_mask_pixels=1,
-        gear_mass=0.25,
-        gear_lateral_friction=0.9,
-        supportor_lateral_friction=0.9,
-        supportor_rgba=None,
+        gear_mass=0.85,
+        gear_lateral_friction=0.85,
+        supportor_lateral_friction=0.05,
         fix_gear_to_gripper=True,
         randomize_object_in_hand_pose=True,
         object_in_hand_x_jit=0.002,
@@ -800,6 +810,28 @@ class GearSim(object):
         if initial_grasp_path is None:
             raise ValueError("initial_grasp_path must be provided")
 
+        self.if_FPSA_gear = bool(if_FPSA_gear)
+        self.fpsa_sample = None
+        if self.if_FPSA_gear:
+            if fpsa_gear_aug_root is None:
+                raise ValueError(
+                    "if_FPSA_gear=True requires fpsa_gear_aug_root"
+                )
+
+            # Random sampling with replacement. FPSAObjectDR only accepts
+            # complete bundles, so the visual mesh, collision mesh, and
+            # transferred grasp pose always come from the same augmentation.
+            self.fpsa_sample = self.fpsaObjectDR.sample_asset(
+                base_mesh_path=gear_path,
+                base_collision_path=gear_collision_path,
+                base_grasp_path=initial_grasp_path,
+                fpsa_aug_root=fpsa_gear_aug_root,
+                include_base=bool(fpsa_gear_include_base),
+            )
+            gear_path = self.fpsa_sample["obj_path"]
+            gear_collision_path = self.fpsa_sample["collision_path"]
+            initial_grasp_path = self.fpsa_sample["grasp_path"]
+            print(f"FPSA geometry mesh: {gear_path}")
         self.env_mesh_path = env_mesh_path
         self.gear_path = gear_path
         self.supportor_path = supportor_path
@@ -1120,21 +1152,6 @@ class GearSim(object):
             spinning_friction=0.0,
         )
         self.supportor_obj_id = self.supportor_id
-        if supportor_rgba is not None:
-            for link_idx in range(
-                -1,
-                self.bullet_client.getNumJoints(
-                    self.supportor_id
-                ),
-            ):
-                try:
-                    self.bullet_client.changeVisualShape(
-                        self.supportor_id,
-                        link_idx,
-                        rgbaColor=list(supportor_rgba),
-                    )
-                except Exception:
-                    pass
 
         self.gear_id = load_models(
             self.bullet_client,
@@ -1566,8 +1583,6 @@ class GearSim(object):
                 dtype=float,
             )
             self.motion_target_orn = ee_orn.copy()
-            self.target_gripper = self.GRIPPER_CLOSED
-
         else:
             raise ValueError(
                 f"Unknown GearSim state: {state}"
@@ -1576,8 +1591,8 @@ class GearSim(object):
     def switch_to_next_state(self):
         if self.state == "close_gripper":
             self.randomize_and_fix_gear_to_gripper()
-        elif self.state == "lower_to_place":
-            self.remove_gear_grasp_constraint()
+        # elif self.state == "lower_to_place":
+        #     self.remove_gear_grasp_constraint()
 
         self.state_idx += 1
         if self.state_idx >= len(self.states):
