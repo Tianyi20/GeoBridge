@@ -20,17 +20,19 @@ NUC (下位机):
     Terminal 2:  python franka_server.py --gripper_robot_ip 10.168.1.200
 
 Workstation (上位机):
-    python franka_deploy_gear_long_horizon_v2.py \
-        -c GeoBridgeCheckpoints/FPSA_gear/latest.ckpt \
+    python franka_deploy_long_horizon.py \
+        -c GeoBridgeCheckpoints/gear_horizon/latest.ckpt \
         -o data/FPSA_gear_long_horizon \
         --camera_setup both
 
 Controls
 --------
     S      Start the full long-horizon episode
-    W      Finish the current cycle: open gripper, return home, run next cycle
+    W      Finish the current cycle: record opening/return home, run next cycle
     H      End the entire long-horizon episode immediately
     P      Pause / resume the action loop
+    G      Close the gripper once during policy rollout (after resume if paused)
+    Y      Add +0.005 m to y of the next predicted chunk's first action
     Esc    Quit
 
 Important
@@ -71,6 +73,7 @@ from config import (  # noqa: E402
 from franka_collect import (  # noqa: E402
     FrankaClient, L515Camera, FisheyeCamera, find_video_device_by_usb_id,
 )
+from gripper_command_filter import GripperCommandDebouncer  # noqa: E402
 
 from diffusion_policy.common.pytorch_util import dict_apply  # noqa: E402
 from diffusion_policy.common.pose_trajectory_interpolator import (  # noqa: E402
@@ -301,7 +304,11 @@ def _schedule_chunk(pose_interp: PoseTrajectoryInterpolator,
 # ======================== Keyboard ========================
 
 class KeyMonitor:
-    """Pynput listener for Esc / S / W / P / H, non-blocking."""
+    """Non-blocking listener for Esc/S/W/P/H and rollout-only G/Y requests.
+
+    G/Y requests cross from the pynput listener thread to the rollout main
+    thread under one lock. They are coalescing booleans, not command queues.
+    """
 
     def __init__(self):
         self.quit_requested = False
@@ -309,6 +316,9 @@ class KeyMonitor:
         self.cycle_requested = False
         self.stop_requested = False
         self.pause = False
+        self._request_lock = threading.Lock()
+        self._grasp_requested = False
+        self._y_nudge_requested = False
         self._listener = pynput_keyboard.Listener(on_press=self._on_press)
         self._listener.start()
 
@@ -329,6 +339,32 @@ class KeyMonitor:
             self.stop_requested = True
         elif c == 'p':
             self.pause = not self.pause
+        elif c == 'g':
+            with self._request_lock:
+                self._grasp_requested = True
+        elif c == 'y':
+            with self._request_lock:
+                self._y_nudge_requested = True
+
+    def consume_grasp_request(self):
+        """Consume the latest coalesced rollout grasp request once."""
+        with self._request_lock:
+            requested = self._grasp_requested
+            self._grasp_requested = False
+        return requested
+
+    def consume_y_nudge_request(self):
+        """Consume the latest coalesced rollout y-nudge request once."""
+        with self._request_lock:
+            requested = self._y_nudge_requested
+            self._y_nudge_requested = False
+        return requested
+
+    def clear_rollout_requests(self):
+        """Drop G/Y presses made outside the current policy rollout."""
+        with self._request_lock:
+            self._grasp_requested = False
+            self._y_nudge_requested = False
 
     def stop(self):
         self._listener.stop()
@@ -353,6 +389,66 @@ def goto_sim_home(robot: FrankaClient):
     robot.start_cartesian_impedance()
     time.sleep(0.2)
     print('[Home] sim home reached, impedance running, gripper open.')
+
+
+def goto_sim_home_recorded(robot: FrankaClient, env_cam, wrist_cam,
+                           recording: dict, capture_hz: float = 30.0):
+    """Return home while continuously appending camera frames to ``recording``.
+
+    Camera reads run in their own thread because the robot's home RPC is
+    blocking. Robot RPCs remain on the calling (main) thread.
+    """
+    if recording is None or (env_cam is None and wrist_cam is None):
+        goto_sim_home(robot)
+        return
+
+    period = 1.0 / max(float(capture_hz), 1e-6)
+    stop_capture = threading.Event()
+
+    def _capture_home():
+        next_deadline = time.monotonic()
+        last_warning_t = {'env': float('-inf'), 'wrist': float('-inf')}
+
+        def _warn(camera_name, exc):
+            now = time.monotonic()
+            # Keep a failing camera from flooding the console at capture rate.
+            if now - last_warning_t[camera_name] >= 1.0:
+                print(f'[Home][Camera][WARN] {camera_name} read failed: {exc!r}')
+                last_warning_t[camera_name] = now
+
+        while not stop_capture.is_set():
+            if env_cam is not None:
+                try:
+                    color, _ = env_cam.get()
+                    if color is not None:
+                        recording['env_frames'].append(color.copy())
+                        recording['env_t'].append(time.monotonic())
+                except Exception as e:
+                    _warn('env', e)
+
+            if wrist_cam is not None:
+                try:
+                    color = wrist_cam.get()
+                    if color is not None:
+                        recording['wrist_frames'].append(color.copy())
+                        recording['wrist_t'].append(time.monotonic())
+                except Exception as e:
+                    _warn('wrist', e)
+
+            next_deadline += period
+            now = time.monotonic()
+            if next_deadline <= now:
+                next_deadline = now + period
+            stop_capture.wait(next_deadline - now)
+
+    capture_thread = threading.Thread(
+        target=_capture_home, name='home-camera-capture', daemon=True)
+    capture_thread.start()
+    try:
+        goto_sim_home(robot)
+    finally:
+        stop_capture.set()
+        capture_thread.join()
 
 
 def _next_episode_idx(output_dir: pathlib.Path) -> int:
@@ -490,6 +586,9 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
         are actually fed to the policy (an opened-but-unused camera is still
         recorded to video).
     """
+    # G/Y are rollout-local: do not carry presses from previews or prior cycles.
+    keys.clear_rollout_requests()
+
     action_dt = 1.0 / frequency
     control_dt = 1.0 / control_hz
     chunk_horizon = min(exec_horizon, n_action_steps)
@@ -500,6 +599,8 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
     time.sleep(0.6)
     gripper_width = float(robot.get_gripper_state()['width'])
     is_open = gripper_width > 0.04
+    gripper_commands = GripperCommandDebouncer(
+        gripper_state_threshold, initial_is_open=is_open)
 
     # ---- camera readers (normalize each camera's .get() to an RGB frame) ----
     env_active = env_cam is not None
@@ -572,6 +673,23 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
                 t_now = time.monotonic()
                 next_send_t = max(next_send_t, t_now)
                 continue
+
+            # Consume G only while actively running, never during pause.
+            if keys.consume_grasp_request():
+                try:
+                    grasp_accepted = robot.gripper_grasp()
+                except Exception as e:
+                    print(f'[Keyboard] WARNING: G gripper grasp failed: {e!r}')
+                else:
+                    if grasp_accepted is True:
+                        is_open = False
+                        gripper_commands.is_open = False
+                        gripper_commands._candidate = None
+                        gripper_commands._candidate_count = 0
+                        print('[Keyboard] G gripper grasp accepted; state set closed.')
+                    else:
+                        print('[Keyboard] WARNING: G gripper grasp was not accepted '
+                              f'(RPC returned {grasp_accepted!r}).')
 
             t_now = time.monotonic()
 
@@ -658,7 +776,12 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
             # ============== 4. Consume inference results ==============
             try:
                 sched_t, actions_full, inf_ms = worker.act_q.get_nowait()
-                actions = actions_full[:chunk_horizon]
+                actions = actions_full[:chunk_horizon].copy()
+                if keys.consume_y_nudge_request():
+                    old_y = float(actions[0, 1])
+                    actions[0, 1] = old_y + 0.005
+                    print(f'[Keyboard] Y first-action y: {old_y:.6f} -> '
+                          f'{float(actions[0, 1]):.6f} m')
                 pose_interp, last_waypoint_time, grip_targets = _schedule_chunk(
                     pose_interp, last_waypoint_time,
                     sched_t, actions, action_dt,
@@ -672,16 +795,8 @@ def run_episode(policy, robot, env_cam, wrist_cam, keys: KeyMonitor,
                 grip_cmd = float(np.mean(grip_targets))
                 ic(grip_cmd)
                 ic(chunks_done)
-                if chunks_done > 65 and grip_cmd >= 0.4:
-                    robot.gripper_release()
-                    is_open = True                    
-
-                if grip_cmd < gripper_state_threshold and is_open:
-                    robot.gripper_grasp()
-                    is_open = False
-                elif grip_cmd >= gripper_state_threshold and not is_open:
-                    robot.gripper_release()
-                    is_open = True
+                is_open = gripper_commands.update(
+                    grip_cmd, robot.gripper_grasp, robot.gripper_release)
 
                 # bookkeeping
                 if record_enabled:
@@ -756,7 +871,8 @@ def save_episode_recording(episode_dir: pathlib.Path, recording: dict):
         ('wrist.mp4', recording['wrist_frames'], recording['wrist_t']),
     ):
         if len(frames) > 1:
-            # Ignore the intentional home/reset gaps between policy cycles.
+            # Filter initial pre-recording and unusual camera timing gaps. W-triggered
+            # home/reset motion is now recorded continuously between policy cycles.
             dt = np.diff(ts_list)
             dt = dt[(dt > 0) & (dt < 1.0)]
             fps = 1.0 / np.median(dt) if len(dt) else 30.0
@@ -806,7 +922,7 @@ def _save_mp4(path: pathlib.Path, frames_rgb, fps: float):
                    'big policy jumps from causing joint-velocity faults.')
 @click.option('--max_rot_speed', default=0.5, type=float,
               help='Cap on rotation speed between waypoints (rad/s).')
-@click.option('--gripper_threshold', default=0.9, type=float,
+@click.option('--gripper_threshold', default=0.95, type=float,
               help='binary gripper-state threshold; action < thr => grasp '
                    '(close), action >= thr => release (open). Model outputs '
                    '~1.0=open / ~0.0=closed, so 0.5 is the natural cutoff.')
@@ -934,8 +1050,10 @@ def main(checkpoint, output_dir, device, robot_ip, robot_port,
 
     keys = KeyMonitor()
     print('=' * 60)
-    print('  S = start long horizon | W = finish cycle | H = end long horizon')
-    print('  P = pause / resume | Esc = quit')
+    print('  S = start long horizon | W = finish cycle + record return home')
+    print('  H = end long horizon')
+    print('  P = pause / resume | G = close gripper once')
+    print('  Y = next chunk first-action y +0.005 m | Esc = quit')
     print('=' * 60)
 
     run_kwargs = dict(
@@ -1004,8 +1122,8 @@ def main(checkpoint, output_dir, device, robot_ip, robot_port,
                 if recording is not None:
                     recording['cycle_ends'].append(len(recording['actions']))
                 print(f'[Cycle {cycle+1}/{n_cycles}] complete; '
-                      'opening gripper and returning home ...')
-                goto_sim_home(robot)
+                      'recording opening gripper and return home ...')
+                goto_sim_home_recorded(robot, env_cam, wrist_cam, recording)
 
             if episode_dir is not None and recording is not None:
                 save_episode_recording(episode_dir, recording)
