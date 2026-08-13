@@ -1,0 +1,71 @@
+# FPSA manual annotation.
+# Edit `range` manually before running FPSA_batch_randomizer.py.
+# `constrained_ids` includes `reshaped_ids`.
+# `reshaped_vector` and `range` are per-handle and match the order of `reshaped_ids`.
+object:
+  obj_path: /home/iadc/GeoBridge/data/objects/gear_extraction/gear/gear.obj
+  initial_grasp_path: /home/iadc/GeoBridge/data/objects/gear_extraction/gear/grasp.yaml
+  name: gear
+
+solver:
+  max_iters: 50
+  method_max_iters:
+    APAP: 50
+    slippage: 50
+  k_ring: 3
+  use_distance_weights: true
+  quat_order: xyzw
+  patch_method: k_ring
+
+sampler:
+  n_shapes: 100
+  seed: 43
+  max_workers: 24
+  mp_start_method: spawn
+  label_mode: balanced       # balanced/random_one/random_k/all
+  labels: [gear_streching]
+  labels_per_shape: 1
+  value_sampling: linspace   # linspace/random
+  sampling_strategy: cartesian
+
+output:
+  root: Gear_aug_outputs
+  layout: per_shape_dir      # per_shape_dir/flat
+  overwrite: true
+  write_coacd: true
+  save_raw_deformed: false
+  save_debug: true
+
+
+deformations:
+  - label: gear_streching
+    type: displacement
+    method: slippage
+    description: Manually annotated FPSA deformation label
+    constrained_ids: [260, 257, 5437, 255, 469, 468, 467, 466, 464, 462, 459, 455,
+      453, 450, 447, 275, 272, 269, 265, 263, 267, 1, 451, 452, 460, 461, 465, 258,
+      259, 254, 270, 271, 273, 274, 276, 644, 648, 5463, 5405, 5454, 5416, 5320, 5170,
+      5359, 5184, 5219, 5261, 5289, 5334]
+    reshaped_ids: [5320, 5170, 5359, 5184, 5219, 5261, 5289, 5334]
+    reshaped_vector:
+      - [0.0, -1.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [-1.0, 0.0, 0.0]
+      - [1.0, 0.0, 0.0]
+      - [0.7071067811865476, 0.7071067811865476, 0.0]
+      - [0.7071067811865476, -0.7071067811865476, 0.0]
+      - [-0.7071067811865476, -0.7071067811865476, 0.0]
+      - [-0.7071067811865476, 0.7071067811865476, 0.0]
+    range:
+      - [-0.06, 0.1]
+      - [-0.06, 0.1]
+      - [-0.06, 0.1]
+      - [-0.06, 0.1]
+      - [-0.06, 0.1]
+      - [-0.06, 0.1]
+      - [-0.06, 0.1]
+      - [-0.06, 0.1]
+    coupled: false
+    normalize_vector: true
+    distribution: uniform
+    weight: 1.0

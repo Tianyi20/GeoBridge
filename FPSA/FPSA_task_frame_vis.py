@@ -1355,7 +1355,7 @@ class ShapeAugmentor:
             )
 
         scale = self._default_vis_scale()
-        axis_size = 0.2 * scale
+        axis_size = 0.3 * scale
         marker_radius = 0.012 * scale
 
         geoms = []
@@ -1422,6 +1422,478 @@ class ShapeAugmentor:
             height=900,
         )
         return None
+
+    @staticmethod
+    def _trimesh_arrow(start, end, color, radius, head_ratio=0.28):
+        """Create a presentation-friendly arrow between two 3-D points."""
+        start = np.asarray(start, dtype=np.float64).reshape(3)
+        end = np.asarray(end, dtype=np.float64).reshape(3)
+        direction = end - start
+        length = float(np.linalg.norm(direction))
+        if length < 1e-12:
+            return None
+
+        unit = direction / length
+        head_length = min(max(4.0 * radius, head_ratio * length), 0.55 * length)
+        shaft_end = end - head_length * unit
+        arrow_parts = []
+
+        shaft_length = float(np.linalg.norm(shaft_end - start))
+        if shaft_length > 1e-12:
+            shaft = trimesh.creation.cylinder(
+                radius=float(radius),
+                segment=np.vstack([start, shaft_end]),
+                sections=24,
+            )
+            shaft.visual.face_colors = color
+            arrow_parts.append(shaft)
+
+        # trimesh cones are created along +Z, starting at z=0.
+        T_head = trimesh.geometry.align_vectors([0.0, 0.0, 1.0], unit)
+        T_head[:3, 3] = shaft_end
+        head = trimesh.creation.cone(
+            radius=2.2 * float(radius),
+            height=head_length,
+            sections=32,
+            transform=T_head,
+        )
+        head.visual.face_colors = color
+        arrow_parts.append(head)
+        return trimesh.util.concatenate(arrow_parts)
+
+    @staticmethod
+    def _trimesh_dashed_segment(start, end, color, radius, dash_count=9):
+        """Create a dashed 3-D segment as a list of short cylinders."""
+        start = np.asarray(start, dtype=np.float64).reshape(3)
+        end = np.asarray(end, dtype=np.float64).reshape(3)
+        parts = []
+        for i in range(int(dash_count)):
+            a = i / float(dash_count)
+            b = min(a + 0.58 / float(dash_count), 1.0)
+            p0 = (1.0 - a) * start + a * end
+            p1 = (1.0 - b) * start + b * end
+            if np.linalg.norm(p1 - p0) < 1e-12:
+                continue
+            dash = trimesh.creation.cylinder(
+                radius=float(radius),
+                segment=np.vstack([p0, p1]),
+                sections=12,
+            )
+            dash.visual.face_colors = color
+            parts.append(dash)
+        return trimesh.util.concatenate(parts) if parts else None
+
+    def visualize_task_frame_transfer(
+        self,
+        T_grasp_old,
+        T_new,
+        T_tcp,
+        wrench_to_tcp_T=None,
+        anchor=None,
+        debug_info=None,
+        show=True,
+        export_path=None,
+        width=1800,
+        height=1200,
+    ):
+        """Render a publication-style shape-matching task-frame transfer.
+
+        This figure uses the transform convention already used by ``chain_demo``::
+
+            wrench_to_tcp_T = T_tcp @ inv(T_new)
+
+        Instead of drawing a dense set of purple vertex-to-vertex lines, the
+        local Kabsch fit is shown as a rigid patch block:
+
+        * blue OBB + points: original local patch
+        * orange OBB + points: deformed local patch
+        * gold center arrow: fitted translation
+        * gold rotation arc: fitted ``R_patch``
+        * local RGB axes: orientation before/after shape matching
+
+        Open3D's modern renderer is used for lit surfaces, transparency,
+        anti-aliased lines, shadows, and high-resolution PNG output.
+
+        Args:
+            T_grasp_old: Task/grasp frame before deformation.
+            T_new: Task/grasp frame transferred by local shape matching.
+            T_tcp: Fixed TCP pose used by the downstream pipeline.
+            wrench_to_tcp_T: Optional precomputed result. If omitted, it is
+                calculated with the equation above.
+            anchor: Anchor returned by ``transfer_grasp_SE3``.
+            debug_info: Debug dictionary returned by ``transfer_grasp_SE3``.
+            show: Open the interactive Open3D viewer when True.
+            export_path: Optional high-resolution ``.png`` output path.
+            width, height: Render size used for the PNG and viewer.
+
+        Returns:
+            Dictionary containing named Open3D geometry and transform metadata.
+        """
+        def _as_SE3(T, name):
+            T = np.asarray(T, dtype=np.float64)
+            if T.shape != (4, 4):
+                raise ValueError(f"{name} must be 4x4, got {T.shape}")
+            if not np.all(np.isfinite(T)):
+                raise ValueError(f"{name} contains non-finite values")
+            return T
+
+        if self.V_opt is None:
+            raise ValueError("No optimized vertices found for visualization.")
+
+        T_grasp_old = _as_SE3(T_grasp_old, "T_grasp_old")
+        T_new = _as_SE3(T_new, "T_new")
+        T_tcp = _as_SE3(T_tcp, "T_tcp")
+        expected_result = T_tcp @ np.linalg.inv(T_new)
+        if wrench_to_tcp_T is None:
+            wrench_to_tcp_T = expected_result
+        else:
+            wrench_to_tcp_T = _as_SE3(wrench_to_tcp_T, "wrench_to_tcp_T")
+            if not np.allclose(wrench_to_tcp_T, expected_result, atol=1e-8):
+                raise ValueError(
+                    "wrench_to_tcp_T does not match T_tcp @ inv(T_new)"
+                )
+
+        scale = self._default_vis_scale()
+        axis_length = 0.18 * scale
+        arrow_radius = 0.0045 * scale
+
+        def _material(color, shader="defaultLit", roughness=0.72, metallic=0.0):
+            material = o3d.visualization.rendering.MaterialRecord()
+            material.shader = shader
+            material.base_color = [float(c) for c in color]
+            material.base_roughness = float(roughness)
+            material.base_metallic = float(metallic)
+            return material
+
+        def _line_material(color, width_px=3.0):
+            material = _material(color, shader="unlitLine")
+            material.line_width = float(width_px)
+            return material
+
+        def _mesh(vertices, color):
+            mesh = o3d.geometry.TriangleMesh()
+            mesh.vertices = o3d.utility.Vector3dVector(np.asarray(vertices))
+            mesh.triangles = o3d.utility.Vector3iVector(self.F.astype(np.int32))
+            mesh.compute_vertex_normals()
+            mesh.paint_uniform_color(color[:3])
+            return mesh
+
+        def _rotation_from_z(direction):
+            direction = np.asarray(direction, dtype=np.float64)
+            direction /= np.linalg.norm(direction) + 1e-12
+            z = np.array([0.0, 0.0, 1.0])
+            cross = np.cross(z, direction)
+            sine = np.linalg.norm(cross)
+            cosine = float(np.clip(z @ direction, -1.0, 1.0))
+            if sine < 1e-10:
+                return np.eye(3) if cosine > 0.0 else np.diag([1.0, -1.0, -1.0])
+            axis = cross / sine
+            K = np.array([
+                [0.0, -axis[2], axis[1]],
+                [axis[2], 0.0, -axis[0]],
+                [-axis[1], axis[0], 0.0],
+            ])
+            return np.eye(3) + sine * K + (1.0 - cosine) * (K @ K)
+
+        def _arrow(start, end, color):
+            start = np.asarray(start, dtype=np.float64)
+            end = np.asarray(end, dtype=np.float64)
+            direction = end - start
+            length = float(np.linalg.norm(direction))
+            if length < 1e-10:
+                return None
+            cone_height = min(0.28 * length, 0.06 * scale)
+            cylinder_height = max(length - cone_height, 0.15 * length)
+            mesh = o3d.geometry.TriangleMesh.create_arrow(
+                cylinder_radius=arrow_radius,
+                cone_radius=2.25 * arrow_radius,
+                cylinder_height=cylinder_height,
+                cone_height=cone_height,
+                resolution=32,
+                cylinder_split=4,
+                cone_split=1,
+            )
+            mesh.rotate(_rotation_from_z(direction), center=np.zeros(3))
+            mesh.translate(start)
+            mesh.compute_vertex_normals()
+            mesh.paint_uniform_color(color[:3])
+            return mesh
+
+        def _line_set(points, lines, color):
+            line_set = o3d.geometry.LineSet()
+            line_set.points = o3d.utility.Vector3dVector(np.asarray(points))
+            line_set.lines = o3d.utility.Vector2iVector(np.asarray(lines, dtype=np.int32))
+            line_set.paint_uniform_color(color[:3])
+            return line_set
+
+        def _dashed_line(start, end, color, count=10):
+            points, lines = [], []
+            for i in range(count):
+                a = i / count
+                b = min(a + 0.56 / count, 1.0)
+                points.extend([(1.0 - a) * start + a * end,
+                               (1.0 - b) * start + b * end])
+                lines.append([2 * i, 2 * i + 1])
+            return _line_set(points, lines, color)
+
+        def _patch_obb(points, orientation=None, padding=0.12):
+            points = np.asarray(points, dtype=np.float64)
+            center = points.mean(axis=0)
+            if orientation is None:
+                _, _, Vt = np.linalg.svd(points - center, full_matrices=False)
+                orientation = Vt.T
+                if np.linalg.det(orientation) < 0.0:
+                    orientation[:, -1] *= -1.0
+            local = (points - center) @ orientation
+            lo, hi = local.min(axis=0), local.max(axis=0)
+            extent = np.maximum(hi - lo, 0.018 * scale)
+            extent *= 1.0 + float(padding)
+            local_center = 0.5 * (lo + hi)
+            box_center = center + orientation @ local_center
+            return o3d.geometry.OrientedBoundingBox(box_center, orientation, extent)
+
+        def _frame_at(center, R, size):
+            frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=size)
+            T = np.eye(4)
+            T[:3, :3] = R
+            T[:3, 3] = center
+            frame.transform(T)
+            return frame
+
+        geometries = []
+
+        def _add(name, geometry, material):
+            if geometry is not None:
+                geometries.append({"name": name, "geometry": geometry, "material": material})
+
+        # Neutral PBR wrench surfaces keep attention on the task-frame transfer.
+        _add(
+            "01_original_wrench_ghost",
+            _mesh(self.V, [0.45, 0.46, 0.48, 1.0]),
+            _material(
+                [0.45, 0.46, 0.48, 0.85],
+                "defaultLitTransparency",
+                0.05,
+                0.75,
+            ),
+        )
+
+        _add(
+            "02_deformed_wrench",
+            _mesh(self.V_opt, [0.45, 0.46, 0.48, 1.0]),
+            _material(
+                [0.45, 0.46, 0.48, 0.85],
+                "defaultLitTransparency",
+                0.05,
+                0.75,
+            ),
+        )
+
+        axis_material = _material([1.0, 1.0, 1.0, 1.0], "defaultUnlit")
+        for name, T, size in (
+            ("03_old_task_frame", T_grasp_old, 0.78 * axis_length),
+            ("04_shape_matched_T_new", T_new, 1.08 * axis_length),
+            ("05_fixed_TCP_frame", T_tcp, axis_length),
+        ):
+            frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=size)
+            frame.transform(T)
+            _add(name, frame, axis_material)
+
+        world_origin = np.zeros(3, dtype=np.float64)
+        old_origin = T_grasp_old[:3, 3]
+        new_origin = T_new[:3, 3]
+        tcp_origin = T_tcp[:3, 3]
+
+        GOLD = [0.96, 0.58, 0.08, 1.0]
+        BLUE = [0.12, 0.45, 0.88, 1.0]
+        ORANGE = [1.0, 0.30, 0.08, 1.0]
+        MAGENTA = [0.88, 0.08, 0.42, 1.0]
+
+        _add("06_inverse_T_new_operand",
+             _dashed_line(new_origin, world_origin, GOLD),
+             _line_material(GOLD, 3.0))
+        _add("07_T_tcp_operand",
+             _dashed_line(world_origin, tcp_origin, BLUE),
+             _line_material(BLUE, 3.0))
+        _add("08_wrench_to_tcp_T_result",
+             _arrow(new_origin, tcp_origin, MAGENTA),
+             _material(MAGENTA, "defaultLit", 0.28, 0.05))
+
+        # Shape matching is deliberately shown as one fitted rigid patch block,
+        # not as a dense collection of independent purple displacements.
+        patch_metadata = {}
+        if anchor is not None:
+            patch_ids = np.asarray(anchor["patch_vertex_ids"], dtype=np.int64)
+            P = np.asarray(self.V)[patch_ids]
+            Q = np.asarray(self.V_opt)[patch_ids]
+
+            if debug_info is not None and {"R_patch", "t_patch"} <= set(debug_info):
+                R_patch = np.asarray(debug_info["R_patch"], dtype=np.float64)
+                t_patch = np.asarray(debug_info["t_patch"], dtype=np.float64)
+            else:
+                weights = self._patch_weights_from_anchor(
+                    patch_ids, np.mean(P, axis=0)
+                )
+                R_patch, t_patch = self.fit_rigid_transform(P, Q, weights)
+            R_patch = self._project_to_SO3(R_patch)
+
+            old_box = _patch_obb(P)
+            new_orientation = self._project_to_SO3(R_patch @ old_box.R)
+            new_box = _patch_obb(Q, orientation=new_orientation)
+            old_box.color = BLUE[:3]
+            new_box.color = ORANGE[:3]
+            old_box_lines = o3d.geometry.LineSet.create_from_oriented_bounding_box(
+                old_box
+            )
+            new_box_lines = o3d.geometry.LineSet.create_from_oriented_bounding_box(
+                new_box
+            )
+            old_box_lines.paint_uniform_color(BLUE[:3])
+            new_box_lines.paint_uniform_color(ORANGE[:3])
+            _add("09_old_patch_oriented_bbox", old_box_lines,
+                 _line_material(BLUE, 5.0))
+            _add("10_new_patch_oriented_bbox", new_box_lines,
+                 _line_material(ORANGE, 5.0))
+
+            old_points = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(P))
+            new_points = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(Q))
+            old_points.paint_uniform_color(BLUE[:3])
+            new_points.paint_uniform_color(ORANGE[:3])
+            old_point_material = _material(BLUE, "defaultUnlit")
+            new_point_material = _material(ORANGE, "defaultUnlit")
+            old_point_material.point_size = 7.0
+            new_point_material.point_size = 7.0
+            _add("11_old_patch_points", old_points, old_point_material)
+            _add("12_new_patch_points", new_points, new_point_material)
+
+            _add("13_old_patch_local_frame",
+                 _frame_at(old_box.center, old_box.R, 0.45 * axis_length),
+                 axis_material)
+            _add("14_new_patch_local_frame",
+                 _frame_at(new_box.center, new_box.R, 0.45 * axis_length),
+                 axis_material)
+            _add("15_Kabsch_translation_t_patch",
+                 _arrow(old_box.center, new_box.center, GOLD),
+                 _material(GOLD, "defaultLit", 0.24, 0.06))
+
+            # Corner correspondences make the whole-box transform readable.
+            old_corners = np.asarray(old_box.get_box_points())
+            predicted_corners = old_corners @ R_patch.T + t_patch
+            corner_points, corner_lines = [], []
+            for i, (p, q) in enumerate(zip(old_corners, predicted_corners)):
+                corner_points.extend([p, q])
+                corner_lines.append([2 * i, 2 * i + 1])
+            corner_links = _line_set(
+                corner_points, corner_lines, [0.95, 0.72, 0.24, 1.0]
+            )
+            _add("16_bbox_corner_rigid_correspondence", corner_links,
+                 _line_material([0.95, 0.72, 0.24, 0.62], 1.5))
+
+            # Rotation arc from the axis-angle representation of R_patch.
+            angle = float(np.arccos(np.clip((np.trace(R_patch) - 1.0) / 2.0, -1.0, 1.0)))
+            if angle > np.deg2rad(1.0):
+                axis = np.array([
+                    R_patch[2, 1] - R_patch[1, 2],
+                    R_patch[0, 2] - R_patch[2, 0],
+                    R_patch[1, 0] - R_patch[0, 1],
+                ])
+                axis /= np.linalg.norm(axis) + 1e-12
+                u = old_box.R[:, 0] - axis * (axis @ old_box.R[:, 0])
+                if np.linalg.norm(u) < 1e-8:
+                    u = old_box.R[:, 1] - axis * (axis @ old_box.R[:, 1])
+                u /= np.linalg.norm(u) + 1e-12
+                v = np.cross(axis, u)
+                radius = 0.42 * max(float(np.max(new_box.extent)), 0.08 * scale)
+                arc_center = new_box.center
+                samples = max(18, int(np.degrees(angle) / 4.0))
+                theta = np.linspace(0.0, angle, samples)
+                arc_points = arc_center + radius * (
+                    np.cos(theta)[:, None] * u + np.sin(theta)[:, None] * v
+                )
+                arc_lines = [[i, i + 1] for i in range(samples - 1)]
+                _add("17_Kabsch_rotation_R_patch",
+                     _line_set(arc_points, arc_lines, GOLD),
+                     _line_material(GOLD, 5.0))
+                tangent = -np.sin(angle) * u + np.cos(angle) * v
+                _add("18_Kabsch_rotation_arrowhead",
+                     _arrow(arc_points[-1] - 0.08 * radius * tangent,
+                            arc_points[-1] + 0.08 * radius * tangent, GOLD),
+                     _material(GOLD, "defaultLit", 0.22, 0.05))
+
+            patch_metadata = {
+                "R_patch": R_patch,
+                "t_patch": t_patch,
+                "rotation_angle_deg": np.degrees(angle),
+                "old_bbox_center": np.asarray(old_box.center),
+                "new_bbox_center": np.asarray(new_box.center),
+            }
+
+        result = {
+            "geometries": geometries,
+            "equation": "wrench_to_tcp_T = T_tcp @ inv(T_new)",
+            "wrench_to_tcp_T": wrench_to_tcp_T,
+            **patch_metadata,
+        }
+        if debug_info is not None:
+            for key in ("fit_error_mean", "fit_error_max", "det_R_patch"):
+                if key in debug_info:
+                    result[key] = float(debug_info[key])
+
+        print("Open3D task-frame transfer legend:")
+        print("  blue box    : original fitted patch block")
+        print("  orange box  : shape-matched patch block")
+        print("  gold arrow  : Kabsch translation t_patch")
+        print("  gold arc    : Kabsch rotation R_patch")
+        print("  magenta     : wrench_to_tcp_T result")
+        if export_path is not None:
+            export_path = str(export_path)
+            if not export_path.lower().endswith(".png"):
+                raise ValueError("Open3D figure export_path must end with .png")
+            renderer = o3d.visualization.rendering.OffscreenRenderer(
+                int(width), int(height)
+            )
+            renderer.scene.set_background([0.965, 0.972, 0.982, 1.0])
+            renderer.scene.set_lighting(
+                o3d.visualization.rendering.Open3DScene.LightingProfile.SOFT_SHADOWS,
+                [0.45, -0.65, -0.60],
+            )
+            renderer.scene.show_skybox(False)
+            for item in geometries:
+                renderer.scene.add_geometry(
+                    item["name"], item["geometry"], item["material"]
+                )
+            bounds = renderer.scene.bounding_box
+            camera_center = np.asarray(bounds.get_center())
+            camera_distance = max(float(np.linalg.norm(bounds.get_extent())), scale)
+            camera_eye = camera_center + camera_distance * np.array([1.18, -1.42, 0.92])
+            camera_up = np.array([0.0, 0.0, 1.0])
+            renderer.setup_camera(34.0, camera_center, camera_eye, camera_up)
+            image = renderer.render_to_image()
+            if not o3d.io.write_image(export_path, image, 9):
+                raise IOError(f"Failed to write rendered image: {export_path}")
+            print(f"  rendered    : {export_path}")
+            del renderer
+        if show:
+            visible_points = np.vstack([self.V, self.V_opt])
+            view_center = visible_points.mean(axis=0)
+            view_distance = max(
+                float(np.linalg.norm(
+                    visible_points.max(axis=0) - visible_points.min(axis=0)
+                )),
+                scale,
+            )
+            o3d.visualization.draw(
+                geometries,
+                title="Shape-matching task-frame transfer",
+                width=int(width),
+                height=int(height),
+                bg_color=(0.965, 0.972, 0.982, 1.0),
+                show_skybox=False,
+                lookat=view_center,
+                eye=view_center + view_distance * np.array([1.18, -1.42, 0.92]),
+                up=np.array([0.0, 0.0, 1.0]),
+            )
+        return result
     
     def apply_transformation_to_mesh(self, T):
         """

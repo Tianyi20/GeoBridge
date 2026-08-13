@@ -1,0 +1,103 @@
+{
+  "baseline": "naive_uniform_scaling",
+  "scale_xyz": [
+    2.0,
+    2.0,
+    2.0
+  ],
+  "scale_center": "mesh_local_origin",
+  "input_mesh": "/home/iadc/GeoBridge/data/objects/bracket/bracket.obj",
+  "input_grasp": "/home/iadc/GeoBridge/data/objects/bracket/bracket_grasp.yaml",
+  "output_mesh": "outputs/uniform_scaling_baseline/bracket_uniform_scale_2.obj",
+  "output_collision_proxy": "outputs/uniform_scaling_baseline/bracket_uniform_scale_2_coacd.obj",
+  "output_grasp": "outputs/uniform_scaling_baseline/bracket_uniform_scale_2_grasp.yaml",
+  "anchor": {
+    "face_id": 2249,
+    "barycentric": [
+      0.0,
+      0.031249999999997665,
+      0.9687500000000023
+    ],
+    "anchor_point_old": [
+      0.0,
+      -0.0003125000000000003,
+      0.07
+    ],
+    "patch_vertex_ids": [
+      330,
+      339,
+      340,
+      341,
+      343,
+      345,
+      346,
+      990,
+      993,
+      996,
+      997,
+      999,
+      1003,
+      1004,
+      1005,
+      1007,
+      1008,
+      1009,
+      1010,
+      1012,
+      1019,
+      1110,
+      1112,
+      1114,
+      1115,
+      1116,
+      1117
+    ],
+    "source_point_old": [
+      0.0,
+      -0.0003125,
+      0.060350002
+    ],
+    "k_ring": 2,
+    "patch_method": "k_ring",
+    "num_patch_vertices": 27,
+    "squared_distance_to_mesh": 9.312246140000413e-05
+  },
+  "transfer_debug": {
+    "R_patch": [
+      [
+        1.0,
+        -2.7755575615628907e-17,
+        8.673617379884034e-18
+      ],
+      [
+        2.7755575615628907e-17,
+        1.0,
+        1.203706215242022e-34
+      ],
+      [
+        -8.673617379884034e-18,
+        1.203706215242022e-34,
+        1.0
+      ]
+    ],
+    "t_patch": [
+      -0.0013652939343080516,
+      -0.002552105140775079,
+      0.05470402627296351
+    ],
+    "anchor_point_old": [
+      0.0,
+      -0.00031249999999997664,
+      0.07
+    ],
+    "anchor_point_new": [
+      0.0,
+      -0.0006249999999999533,
+      0.14
+    ],
+    "fit_error_mean": 0.040413926545291974,
+    "fit_error_max": 0.06474232887245263,
+    "num_patch_vertices": 27,
+    "det_R_patch": 1.0
+  }
+}

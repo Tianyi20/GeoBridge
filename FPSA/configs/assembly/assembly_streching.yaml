@@ -5,6 +5,7 @@
 
 object:
   obj_path: /home/iadc/GeoBridge/data/objects/assembly/tool/tool.obj
+  initial_grasp_path: /home/iadc/GeoBridge/data/objects/assembly/tool/tool_grasp.yaml
   name: tool
 
 solver:
