@@ -18,7 +18,7 @@ timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 553,
+Sim = WrenchSim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 43,
                 randomize_initial_ee_pose= True)
 
 Sim.make_scene(
@@ -29,7 +29,7 @@ Sim.make_scene(
     clipper_obj_path   = "data/objects/clipper/clipper_v3/clipper_v3.obj",
     initial_grasp_path = "data/objects/screw/wrench_engage.yaml",
     if_FPSA_tool = True,
-    fpsa_tool_aug_root = "data/objects/wrench/wrench_aug_outputs",
+    fpsa_tool_aug_root = "data/objects/wrench/wrench_aug_outputs_uniform_scaling_baseline",
     fpsa_tool_include_base = False,
     wrench_collision_path = None,
     base_wrench_to_tcp_pos = (0.06989, 0.0, 0.0),
@@ -94,20 +94,20 @@ try:
         p.stepSimulation()
         Sim.step()
         sim_step += 1
+        time.sleep(0.01)
 
         if sim_step % record_every_n_sim_steps == 0:
-            RGB = Sim.get_eye_in_hand_image()
-            RGB_agent = Sim.direct_get_agent_view()
+            # RGB = Sim.get_eye_in_hand_image()
+            # RGB_agent = Sim.direct_get_agent_view()
 
-            cv2.imwrite("temp_fisheye.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
-            cv2.imwrite("temp_agentview.png", cv2.cvtColor(RGB_agent, cv2.COLOR_RGBA2BGRA))
-            # obs = Sim.collect_observation(direct= True,
+            # cv2.imwrite("temp_fisheye.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
+            # cv2.imwrite("temp_agentview.png", cv2.cvtColor(RGB_agent, cv2.COLOR_RGBA2BGRA))
+            # # obs = Sim.collect_observation(direct= True,
             #                               use_eye_in_hand= True)
 
             record_idx += 1
             # print(obs["robot0_gripper_qpos"])
             print(record_idx)
-        # time.sleep(0.05)
             print(Sim.is_success(debug= False))
 
         #Sim.collect_action()

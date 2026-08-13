@@ -7,9 +7,17 @@ import pybullet_data
 
 from GearSim import GearSim
 
+import pkgutil
+
 
 p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
+# egl = pkgutil.get_loader('eglRenderer')
+# if (egl):
+#     pluginId = p.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
+# else:
+#     pluginId = p.loadPlugin("eglRendererPlugin")
+
 time_step = 1.0 / 120.0
 p.setTimeStep(time_step)
 p.setGravity(0.0, 0.0, -9.8)
@@ -18,7 +26,7 @@ sim = GearSim(
     p,
     offset=[0.0, 0.0, 0.0],
     control_dt=time_step,
-    seed=52,
+    seed=1222,
     randomize_initial_ee_pose=True,
 )
 
@@ -31,7 +39,7 @@ sim.make_scene(
     supportor_collision_path=None,
 
     if_FPSA_gear=True,
-    fpsa_gear_aug_root="./data/objects/gear_extraction/gear/Gear_aug_outputs",
+    fpsa_gear_aug_root="./data/objects/gear_extraction/gear/Gear_aug_outputs_uniform_scaling_baseline",
     fpsa_gear_include_base=True,
 
     # The gear origin is located at supportor-local (0, 0, 0.31).
@@ -41,7 +49,7 @@ sim.make_scene(
     gear_to_support_euler=[0.0, np.pi, np.pi],
 
     # Nearby low placement target, also expressed in the supportor frame.
-    support_to_place_pos=[-0.10, 0.0, 0.1],
+    support_to_place_pos=[-0.15, 0.0, 0.1],
     support_to_place_euler=None,  # preserve the extracted gear orientation
     randomize_task_pose=True,
     task_x_jit=0.10,
@@ -50,7 +58,7 @@ sim.make_scene(
     task_yaw_jit= 0.0,
 
     safe_approach=0.03,
-    lift_height=0.03,
+    lift_height=0.05,
     place_approach_height=0.04,
     retreat_height=0.0,
 
@@ -110,12 +118,15 @@ try:
         time.sleep(0.01)
 
         if sim_step % record_every_n_sim_steps == 0:
+            start = time.time()
+
             # eye_rgb = sim.get_eye_in_hand_image()
             # RGB_agent = sim.direct_get_agent_view()
-
             # cv2.imwrite("temp_fisheye.png",cv2.cvtColor(eye_rgb, cv2.COLOR_RGB2BGR))
-
             # cv2.imwrite("temp_agentview.png",cv2.cvtColor(RGB_agent, cv2.COLOR_RGBA2BGRA))
+
+            stop = time.time()
+            print("renderImage %f" % (stop - start))
 
             record_idx += 1
             print(record_idx, sim.state, sim.is_success(debug=False))

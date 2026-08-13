@@ -18,7 +18,7 @@ timeStep=1./120.
 p.setTimeStep(timeStep)
 p.setGravity(0,0,-9.8)
 
-Sim = AssemblySim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 8199959,
+Sim = AssemblySim(p, offset=[0, 0, 0], control_dt = timeStep, seed = 44,
                 randomize_initial_ee_pose= True)
 
 Sim.make_scene(
@@ -28,8 +28,8 @@ Sim.make_scene(
     assembly_child_path = "data/objects/assembly/child/assembly_child.obj",
     initial_grasp_path = "data/objects/assembly/tool/tool_grasp.yaml",
     if_FPSA_tool=True,
-    fpsa_tool_aug_root="data/objects/assembly/tool/assemblyTool_aug_outputs",
-    fpsa_tool_include_base=True,
+    fpsa_tool_aug_root="data/objects/assembly/tool/assemblyTool_aug_outputs_uniform_scaling_baseline",
+    fpsa_tool_include_base=False,
     parentobj_pose_base = [0.45, -0.1, 0.015],
     parentobj_euler_base = [0.0, 0.0, -np.pi/2.0],
     childobj_pose_base = [0.7, -0.1, 0.015],
@@ -107,10 +107,10 @@ try:
         sim_step += 1
         time.sleep(0.005)
         if sim_step % record_every_n_sim_steps == 0:
-            RGB = Sim.get_eye_in_hand_image()
+            # RGB = Sim.get_eye_in_hand_image()
             # RGB_agent = Sim.direct_get_agent_view()
 
-            cv2.imwrite("temp_fisheye.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
+            # cv2.imwrite("temp_fisheye.png", cv2.cvtColor(RGB, cv2.COLOR_RGB2BGR))
             # cv2.imwrite("temp_agentview.png", cv2.cvtColor(RGB_agent, cv2.COLOR_RGBA2BGRA))
             # obs = Sim.collect_observation(direct= True,
             #                               use_eye_in_hand= False)
