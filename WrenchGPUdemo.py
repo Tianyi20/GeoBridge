@@ -1,0 +1,123 @@
+from WrenchSim_GPU import WrenchSim
+import pybullet as p
+import os
+from episode_writer import EpisodeWriter
+import json
+from pathlib import Path
+from icecream import ic
+import random
+import pybullet_data as pd
+import math
+import time
+import numpy as np
+import cv2
+cid = p.connect(p.DIRECT)
+# p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP,1)
+p.setAdditionalSearchPath(pd.getDataPath())
+timeStep=1./120.
+p.setTimeStep(timeStep)
+p.setGravity(0,0,-9.8)
+
+Sim = WrenchSim(p, cid, use_egl= True,
+                offset=[0, 0, 0], control_dt = timeStep, seed = 99,
+                randomize_initial_ee_pose= True)
+
+Sim.make_scene(
+    env_mesh_path= "./data/background/repaired_table/tabletop.obj",
+    manipulated_obj_path= "./data/objects/screw/screw_v3/screw_v3.obj",
+    manipulated_obj_collision_path = "./data/objects/screw/screw_v3/screw_collision_v3.obj",
+    wrench_mesh_path = "data/objects/wrench/high_quality/wrench.obj",
+    clipper_obj_path   = "data/objects/clipper/clipper_v3/clipper_v3.obj",
+    initial_grasp_path = "data/objects/screw/wrench_engage.yaml",
+    if_FPSA_tool = True,
+    fpsa_tool_aug_root = "data/objects/wrench/wrench_aug_outputs_uniform_scaling_baseline",
+    fpsa_tool_include_base = False,
+    wrench_collision_path = None,
+    base_wrench_to_tcp_pos = (0.06989, 0.0, 0.0),
+    base_wrench_to_tcp_orn = (0.0, 0.0, 0.0, 1.0),
+    obj_pose_base = [0.75, -0.05, 0.24],
+    obj_euler_base = [0.0, 0.0, 0.0],# screw is a hexagon, 0-60 covers all space
+    randomize_lighting= True,
+    # outlier scene         
+    randomize_outlscene  = True,
+    outlscene_xyz_jit    = 0.015,
+    outlscene_eul_jit    = 0.001,
+    # plane height randomization
+    randomize_plane_height = True,
+    plane_height_jit = 0.002,
+    randomize_wrenchpose = True,
+    wrench_xyz_jitter = 0.01,
+    wrench_y_euler_jitter= 0.00,
+    randomize_objpose  = True,
+    obj_x_jit    = 0.05,
+    obj_y_jit    = 0.1,
+    obj_z_jit    = 0.05,
+    obj_z_eul_jit = 0.0,
+    randomize_campose = True,
+    cam_xyz_jit  = 0.01,
+    cam_eul_jit  = 0.005,
+    randomize_fisheye_cam = True,
+    fisheye_eyz_jit = 0.005,
+    fisheye_eul_jit = 0.002,
+    randomize_camera_intrinsic = True,
+    randomize_image_noise= True,
+    randomize_object_color = True,
+    randomize_robot_texture = True,
+    robot_texture_patterns= ("checkers", "gradient", "noise", "plain"),
+    object_color_mode = "bounded",  # "bounded" or "recolor"
+    object_color_strength = 0.5,
+    randomize_wrench_color = True,
+    wrench_color_mode= "bounded",
+    wrench_color_strength= 0.1,
+    randomize_distractors= True,
+    distractor_root= "/mnt/storage/GoogleScannedObjects",
+    distractor_num_range= (0, 5),
+    distractor_target_size_range= (0.1, 0.5),
+    distractor_workspace = ((-0.2, 1.3), (-0.72, 0.42)),
+    distractor_clearance = 0.08,
+    distractor_path_clearance = 0.08,
+    # at least 10 pixel of the target object
+    distractor_min_target_mask_pixels= 10,
+    )
+
+Sim.enable_high_quality_rendering()
+
+sim_step = 0
+timestamp = 0.0
+record_idx = 0
+record_every_n_sim_steps = 12
+
+# while True:
+#     p.stepSimulation()
+
+try:
+    while (not Sim.done):
+        p.stepSimulation()
+        Sim.step()
+        sim_step += 1
+        # time.sleep(0.01)
+
+        if sim_step % record_every_n_sim_steps == 0:
+            start = time.time()
+
+            # RGB = Sim.get_eye_in_hand_image()
+            # RGB_agent = Sim.direct_get_agent_view()
+            # result = Sim.get_agentview_image()
+            # w, h, RGB_agent, depth, seg = result
+            obs = Sim.collect_observation(direct= False,
+                                          use_eye_in_hand= True)
+            cv2.imwrite("temp_fisheye.png", cv2.cvtColor(obs["robot0_eye_in_hand_image"], cv2.COLOR_RGB2BGR))
+            cv2.imwrite("temp_agentview.png", cv2.cvtColor(obs["agentview_image"], cv2.COLOR_RGBA2BGRA))
+
+            stop = time.time()
+            print("renderImage %f" % (stop - start))
+
+            record_idx += 1
+            # print(obs["robot0_gripper_qpos"])
+            print(record_idx)
+            print(Sim.is_success(debug= False))
+
+        #Sim.collect_action()
+
+except KeyboardInterrupt:
+    print("Stopped by user")
